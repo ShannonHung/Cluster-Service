@@ -62,7 +62,7 @@ async def list_pods(
     request: Request,
     cluster: str,
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
-    namespace: str = Query(..., description="Namespace to list pods from (required; '*' = all)."),
+    namespace: str = Query(..., min_length=1, description="Namespace to list pods from (required; '*' = all)."),
     node: Optional[str] = Query(None, description="Comma-separated node names."),
     status: Optional[str] = Query(None, description="Comma-separated pod phases."),
     pod_name: Optional[str] = Query(None, description="Comma-separated name prefixes."),
