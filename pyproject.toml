@@ -16,6 +16,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "ansi2html>=1.9.2",
     "kubernetes>=31.0.0",
+    "prometheus-fastapi-instrumentator>=7.0.0",
 ]
 
 [dependency-groups]

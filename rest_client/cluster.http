@@ -31,9 +31,30 @@ Authorization: Bearer {{token}}
 GET {{baseUrl}}/api/v1/clusters/{{cluster}}/nodes
 Authorization: Bearer {{token}}
 
-### Get single node detail (full info + pods)
-# Returns: status, roles, version, labels, annotations, unschedulable, pods[]
+### Get single node detail (no pods — query pods via /pods below)
+# Returns: status, roles, version, labels, annotations, unschedulable
 GET {{baseUrl}}/api/v1/clusters/{{cluster}}/nodes/{{agent1}}
+Authorization: Bearer {{token}}
+
+
+# ══════════════════════════════════════════════════════
+# Pods
+# ══════════════════════════════════════════════════════
+
+### List pods in a namespace (namespace required)
+GET {{baseUrl}}/api/v1/clusters/{{cluster}}/pods?namespace=default
+Authorization: Bearer {{token}}
+
+### List pods across all namespaces
+GET {{baseUrl}}/api/v1/clusters/{{cluster}}/pods?namespace=*
+Authorization: Bearer {{token}}
+
+### List pods by pod names
+GET {{baseUrl}}/api/v1/clusters/{{cluster}}/pods?namespace=*&pod_name=core
+Authorization: Bearer {{token}}
+
+### Filtered: node + status + pod_name (comma-separated; OR within, AND across)
+GET {{baseUrl}}/api/v1/clusters/{{cluster}}/pods?namespace=default&node={{agent1}},{{agent2}}&status=Running,Pending&pod_name=web-,api-
 Authorization: Bearer {{token}}
 
 
@@ -186,6 +207,49 @@ Content-Type: application/json
 
 
 # ══════════════════════════════════════════════════════
+# Taints
+# ══════════════════════════════════════════════════════
+
+### Add / overwrite a taint
+PATCH {{baseUrl}}/api/v1/clusters/{{cluster}}/nodes/{{agent1}}/taints
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+    "set": [
+        { "key": "gpu", "value": "true", "effect": "NoSchedule" }
+    ],
+    "remove": []
+}
+
+### Remove a taint (by key + effect)
+PATCH {{baseUrl}}/api/v1/clusters/{{cluster}}/nodes/{{agent1}}/taints
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+    "set": [],
+    "remove": [
+        { "key": "gpu", "effect": "NoSchedule" }
+    ]
+}
+
+### Set and remove taints in one request
+PATCH {{baseUrl}}/api/v1/clusters/{{cluster}}/nodes/{{agent1}}/taints
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+    "set": [
+        { "key": "dedicated", "value": "infra", "effect": "NoExecute" }
+    ],
+    "remove": [
+        { "key": "gpu", "effect": "NoSchedule" }
+    ]
+}
+
+
+# ══════════════════════════════════════════════════════
 # Error cases (for testing)
 # ══════════════════════════════════════════════════════
 
@@ -196,6 +260,20 @@ Authorization: Bearer {{token}}
 ### 404 — node does not exist
 POST {{baseUrl}}/api/v1/clusters/{{cluster}}/nodes/ghost-node/cordon
 Authorization: Bearer {{token}}
+
+### 422 — empty namespace on pods query
+GET {{baseUrl}}/api/v1/clusters/{{cluster}}/pods?namespace=
+Authorization: Bearer {{token}}
+
+### 422 — invalid taint effect
+PATCH {{baseUrl}}/api/v1/clusters/{{cluster}}/nodes/{{agent1}}/taints
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+    "set": [ { "key": "gpu", "effect": "BadEffect" } ],
+    "remove": []
+}
 
 ### 401 — no token
 GET {{baseUrl}}/api/v1/clusters

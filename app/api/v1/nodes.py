@@ -4,12 +4,13 @@ app/api/v1/nodes.py
 Node-level operation endpoints (v1).
 
 Routes:
-  GET   /api/v1/clusters/{cluster}/nodes/{node}             → get node detail + pods
+  GET   /api/v1/clusters/{cluster}/nodes/{node}             → get node detail (no pods)
   POST  /api/v1/clusters/{cluster}/nodes/{node}/cordon      → cordon a node
   POST  /api/v1/clusters/{cluster}/nodes/{node}/uncordon    → uncordon a node
   POST  /api/v1/clusters/{cluster}/nodes/{node}/drain       → drain a node
   PATCH /api/v1/clusters/{cluster}/nodes/{node}/labels      → set/remove labels
   PATCH /api/v1/clusters/{cluster}/nodes/{node}/annotations → set/remove annotations
+  PATCH /api/v1/clusters/{cluster}/nodes/{node}/taints      → set/remove taints
 
 All endpoints require the ``cluster_api`` scope.
 """
@@ -30,6 +31,8 @@ from app.domain.kubernetes_models import (
     NodeDetailData,
     NodeMetadataData,
     NodePatchRequest,
+    NodeTaintData,
+    NodeTaintRequest,
 )
 from app.domain.models import ApiResponse, User
 from app.repositories.cluster_repository import ClusterRepository
@@ -70,8 +73,8 @@ def _request_id(request: Request) -> str:
     summary="Get node detail",
     description=(
         "Returns full node information — status, roles, kubelet version, labels, "
-        "annotations, schedulability — together with all pods currently assigned "
-        "to the node (name, namespace, phase, readiness, owner, restart count)."
+        "annotations, schedulability. Pods are queried via "
+        "GET /clusters/{cluster}/pods."
     ),
 )
 async def get_node(
@@ -233,5 +236,39 @@ async def patch_node_annotations(
         kube=kube,
         set_annotations=body.set,
         remove_annotations=body.remove,
+    )
+    return ApiResponse(data=data, request_id=_request_id(request))
+
+
+# ── PATCH …/taints ────────────────────────────────────────────────────────────
+
+@router.patch(
+    "/{cluster}/nodes/{node}/taints",
+    response_model=ApiResponse[NodeTaintData],
+    summary="Set or remove node taints",
+    description=(
+        "Set ``set`` to add/overwrite taints (a taint with the same key+effect "
+        "overwrites the value), ``remove`` to delete taints by key+effect. "
+        "``effect`` must be NoSchedule, PreferNoSchedule, or NoExecute. "
+        "Response contains the node's **current** taints after the patch."
+    ),
+)
+async def patch_node_taints(
+    request: Request,
+    cluster: str,
+    node: str,
+    body: NodeTaintRequest = NodeTaintRequest(),
+    current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))] = None,
+    repo: ClusterRepository = Depends(_get_cluster_repo),
+    svc: NodeService = Depends(_get_node_service),
+) -> ApiResponse[NodeTaintData]:
+    cfg = repo.get_kube_client_config(cluster)
+    kube = KubeClientFactory().get_core_v1(cfg)
+    data = svc.taint_node(
+        cluster=cluster,
+        node_name=node,
+        kube=kube,
+        set_taints=body.set,
+        remove_taints=body.remove,
     )
     return ApiResponse(data=data, request_id=_request_id(request))

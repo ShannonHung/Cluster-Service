@@ -18,6 +18,8 @@ Route layout:
   POST /api/v1/clusters/{cluster}/nodes/{node}/cordon          → Cordon a node
   POST /api/v1/clusters/{cluster}/nodes/{node}/uncordon        → Uncordon a node
   POST /api/v1/clusters/{cluster}/nodes/{node}/drain           → Drain a node
+  GET  /api/v1/clusters/{cluster}/pods                         → List pods in a namespace (filtered)
+  PATCH /api/v1/clusters/{cluster}/nodes/{node}/taints         → Set or remove node taints
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.clusters import router as clusters_router
 from app.api.v1.deploy import router as deploy_router
 from app.api.v1.nodes import router as nodes_router
+from app.api.v1.pods import router as pods_router
 
 # ── /api/v1 sub-router ────────────────────────────────────────────────────────
 v1_router = APIRouter(prefix="/api/v1")
@@ -35,6 +38,7 @@ v1_router.include_router(auth_router)     # mounts at /api/v1/auth/...
 v1_router.include_router(deploy_router)   # mounts at /api/v1/deploy/...
 v1_router.include_router(clusters_router) # mounts at /api/v1/clusters/...
 v1_router.include_router(nodes_router)    # mounts at /api/v1/clusters/{cluster}/nodes/{node}/...
+v1_router.include_router(pods_router)    # mounts at /api/v1/clusters/{cluster}/pods
 
 # ── Root router (aggregates everything) ───────────────────────────────────────
 api_router = APIRouter()

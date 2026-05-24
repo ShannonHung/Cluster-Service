@@ -14,7 +14,7 @@ import pytest
 from kubernetes.client.exceptions import ApiException
 
 from app.core.exceptions import KubeApiException, NodeNotFoundException
-from app.domain.kubernetes_models import DrainActionData, DrainOptions, NodeActionData, NodeListData
+from app.domain.kubernetes_models import DrainActionData, DrainOptions, NodeActionData, NodeListData, NodeTaintData, PodListData, TaintRemoveSpec, TaintSpec
 from app.services.node_service import NodeService
 
 
@@ -37,6 +37,7 @@ def _make_node(
     roles: list[str] | None = None,
     labels: dict[str, str] | None = None,
     annotations: dict[str, str] | None = None,
+    taints: list | None = None,
 ) -> MagicMock:
     node = MagicMock()
     node.metadata.name = name
@@ -46,6 +47,7 @@ def _make_node(
     node.metadata.annotations = annotations or {}
     node.metadata.owner_references = None
     node.spec.unschedulable = unschedulable
+    node.spec.taints = taints if taints is not None else []
     cond = MagicMock()
     cond.type = "Ready"
     cond.status = "True" if ready else "False"
@@ -55,12 +57,21 @@ def _make_node(
     return node
 
 
+def _make_taint(key: str, effect: str, value: str | None = None) -> MagicMock:
+    t = MagicMock()
+    t.key = key
+    t.value = value
+    t.effect = effect
+    return t
+
+
 def _make_pod(
     name: str = "mypod",
     namespace: str = "default",
     phase: str = "Running",
     owner_kind: str = "ReplicaSet",
     is_mirror: bool = False,
+    node_name: str = "worker-1",
 ) -> MagicMock:
     pod = MagicMock()
     pod.metadata.name = name
@@ -70,6 +81,8 @@ def _make_pod(
     owner.kind = owner_kind
     pod.metadata.owner_references = [owner]
     pod.status.phase = phase
+    pod.status.container_statuses = []
+    pod.spec.node_name = node_name
     return pod
 
 
@@ -78,6 +91,21 @@ def _api_error(status: int, reason: str = "error") -> ApiException:
     exc.status = status
     exc.reason = reason
     return exc
+
+
+# ── get_node ──────────────────────────────────────────────────────────────────
+
+def test_get_node_returns_detail_without_pods():
+    kube = _make_kube()
+    kube.read_node.return_value = _make_node("worker-1", labels={"env": "prod"})
+    result = _svc().get_node(cluster="test", node_name="worker-1", kube=kube)
+
+    assert result.cluster == "test"
+    assert result.name == "worker-1"
+    assert result.labels == {"env": "prod"}
+    # Node detail must NOT list pods anymore, and must not query pods.
+    assert not hasattr(result, "pods")
+    kube.list_pod_for_all_namespaces.assert_not_called()
 
 
 # ── list_nodes ────────────────────────────────────────────────────────────────
@@ -352,3 +380,263 @@ def test_annotate_node_removes_with_null():
 
     body = kube.patch_node.call_args[0][1]
     assert body["metadata"]["annotations"]["old"] is None
+
+
+# ── list_pods ─────────────────────────────────────────────────────────────────
+
+def test_list_pods_no_filters_returns_all_in_namespace():
+    kube = _make_kube()
+    kube.list_namespaced_pod.return_value.items = [
+        _make_pod("web-1", node_name="n1"),
+        _make_pod("api-1", node_name="n2"),
+    ]
+    result = _svc().list_pods(cluster="test", namespace="default", kube=kube)
+
+    assert isinstance(result, PodListData)
+    assert result.cluster == "test"
+    assert result.namespace == "default"
+    assert {p.name for p in result.pods} == {"web-1", "api-1"}
+    kube.list_namespaced_pod.assert_called_once_with("default")
+    kube.list_pod_for_all_namespaces.assert_not_called()
+
+
+def test_list_pods_wildcard_lists_all_namespaces():
+    kube = _make_kube()
+    kube.list_pod_for_all_namespaces.return_value.items = [
+        _make_pod("web-1", namespace="default", node_name="n1"),
+        _make_pod("kube-dns", namespace="kube-system", node_name="n2"),
+    ]
+    result = _svc().list_pods(cluster="test", namespace="*", kube=kube)
+
+    assert result.namespace == "*"
+    assert {p.name for p in result.pods} == {"web-1", "kube-dns"}
+    kube.list_pod_for_all_namespaces.assert_called_once_with()
+    kube.list_namespaced_pod.assert_not_called()
+
+
+def test_list_pods_wildcard_still_applies_filters():
+    kube = _make_kube()
+    kube.list_pod_for_all_namespaces.return_value.items = [
+        _make_pod("web-1", namespace="default", node_name="n1", phase="Running"),
+        _make_pod("web-2", namespace="kube-system", node_name="n2", phase="Pending"),
+    ]
+    result = _svc().list_pods(
+        cluster="test", namespace="*", kube=kube, statuses=["Running"]
+    )
+    assert {p.name for p in result.pods} == {"web-1"}
+
+
+def test_list_pods_filters_by_node():
+    kube = _make_kube()
+    kube.list_namespaced_pod.return_value.items = [
+        _make_pod("web-1", node_name="n1"),
+        _make_pod("web-2", node_name="n2"),
+    ]
+    result = _svc().list_pods(
+        cluster="test", namespace="default", kube=kube, nodes=["n1"]
+    )
+    assert {p.name for p in result.pods} == {"web-1"}
+
+
+def test_list_pods_filters_by_multiple_nodes_or():
+    kube = _make_kube()
+    kube.list_namespaced_pod.return_value.items = [
+        _make_pod("a", node_name="n1"),
+        _make_pod("b", node_name="n2"),
+        _make_pod("c", node_name="n3"),
+    ]
+    result = _svc().list_pods(
+        cluster="test", namespace="default", kube=kube, nodes=["n1", "n2"]
+    )
+    assert {p.name for p in result.pods} == {"a", "b"}
+
+
+def test_list_pods_filters_by_status_case_insensitive():
+    kube = _make_kube()
+    kube.list_namespaced_pod.return_value.items = [
+        _make_pod("running-pod", phase="Running"),
+        _make_pod("pending-pod", phase="Pending"),
+    ]
+    result = _svc().list_pods(
+        cluster="test", namespace="default", kube=kube, statuses=["running"]
+    )
+    assert {p.name for p in result.pods} == {"running-pod"}
+
+
+def test_list_pods_filters_by_name_prefix_or():
+    kube = _make_kube()
+    kube.list_namespaced_pod.return_value.items = [
+        _make_pod("web-7d9f"),
+        _make_pod("api-xyz"),
+        _make_pod("db-1"),
+    ]
+    result = _svc().list_pods(
+        cluster="test", namespace="default", kube=kube, name_prefixes=["web-", "api-"]
+    )
+    assert {p.name for p in result.pods} == {"web-7d9f", "api-xyz"}
+
+
+def test_list_pods_filters_are_anded():
+    kube = _make_kube()
+    kube.list_namespaced_pod.return_value.items = [
+        _make_pod("web-1", node_name="n1", phase="Running"),
+        _make_pod("web-2", node_name="n2", phase="Running"),
+        _make_pod("web-3", node_name="n1", phase="Pending"),
+    ]
+    result = _svc().list_pods(
+        cluster="test", namespace="default", kube=kube,
+        nodes=["n1"], statuses=["Running"], name_prefixes=["web-"],
+    )
+    assert {p.name for p in result.pods} == {"web-1"}
+
+
+def test_list_pods_empty_when_no_match():
+    kube = _make_kube()
+    kube.list_namespaced_pod.return_value.items = [_make_pod("web-1", node_name="n1")]
+    result = _svc().list_pods(
+        cluster="test", namespace="default", kube=kube, nodes=["nonexistent"]
+    )
+    assert result.pods == []
+
+
+def test_list_pods_raises_on_api_error():
+    kube = _make_kube()
+    kube.list_namespaced_pod.side_effect = _api_error(500)
+    with pytest.raises(KubeApiException):
+        _svc().list_pods(cluster="test", namespace="default", kube=kube)
+
+
+def test_list_pods_wildcard_raises_on_api_error():
+    kube = _make_kube()
+    kube.list_pod_for_all_namespaces.side_effect = _api_error(500)
+    with pytest.raises(KubeApiException):
+        _svc().list_pods(cluster="test", namespace="*", kube=kube)
+
+
+# ── taint_node ────────────────────────────────────────────────────────────────
+
+def test_taint_node_adds_new_taint():
+    kube = _make_kube()
+    kube.read_node.side_effect = [
+        _make_node("n", taints=[]),
+        _make_node("n", taints=[_make_taint("gpu", "NoSchedule", "true")]),
+    ]
+    result = _svc().taint_node(
+        "test", "n", kube,
+        set_taints=[TaintSpec(key="gpu", value="true", effect="NoSchedule")],
+        remove_taints=[],
+    )
+    body = kube.patch_node.call_args[0][1]
+    taints = body["spec"]["taints"]
+    assert {(t["key"], t["effect"], t.get("value")) for t in taints} == {("gpu", "NoSchedule", "true")}
+    assert result.action == "taint"
+    assert any(t.key == "gpu" and t.effect == "NoSchedule" for t in result.taints)
+
+
+def test_taint_node_removes_by_key_and_effect():
+    kube = _make_kube()
+    kube.read_node.side_effect = [
+        _make_node("n", taints=[_make_taint("gpu", "NoSchedule", "true")]),
+        _make_node("n", taints=[]),
+    ]
+    result = _svc().taint_node(
+        "test", "n", kube,
+        set_taints=[],
+        remove_taints=[TaintRemoveSpec(key="gpu", effect="NoSchedule")],
+    )
+    body = kube.patch_node.call_args[0][1]
+    assert body["spec"]["taints"] == []
+    assert result.taints == []
+
+
+def test_taint_node_same_key_effect_overwrites_value():
+    kube = _make_kube()
+    kube.read_node.side_effect = [
+        _make_node("n", taints=[_make_taint("gpu", "NoSchedule", "old")]),
+        _make_node("n", taints=[_make_taint("gpu", "NoSchedule", "new")]),
+    ]
+    _svc().taint_node(
+        "test", "n", kube,
+        set_taints=[TaintSpec(key="gpu", value="new", effect="NoSchedule")],
+        remove_taints=[],
+    )
+    body = kube.patch_node.call_args[0][1]
+    taints = body["spec"]["taints"]
+    matching = [t for t in taints if t["key"] == "gpu" and t["effect"] == "NoSchedule"]
+    assert len(matching) == 1
+    assert matching[0]["value"] == "new"
+
+
+def test_taint_node_set_and_remove_together():
+    kube = _make_kube()
+    kube.read_node.side_effect = [
+        _make_node("n", taints=[_make_taint("old", "NoSchedule", None)]),
+        _make_node("n", taints=[_make_taint("new", "NoExecute", "1")]),
+    ]
+    _svc().taint_node(
+        "test", "n", kube,
+        set_taints=[TaintSpec(key="new", value="1", effect="NoExecute")],
+        remove_taints=[TaintRemoveSpec(key="old", effect="NoSchedule")],
+    )
+    body = kube.patch_node.call_args[0][1]
+    keys = {(t["key"], t["effect"]) for t in body["spec"]["taints"]}
+    assert keys == {("new", "NoExecute")}
+
+
+def test_taint_node_remove_nonexistent_is_noop_not_error():
+    kube = _make_kube()
+    kube.read_node.side_effect = [
+        _make_node("n", taints=[_make_taint("keep", "NoSchedule", None)]),
+        _make_node("n", taints=[_make_taint("keep", "NoSchedule", None)]),
+    ]
+    result = _svc().taint_node(
+        "test", "n", kube,
+        set_taints=[],
+        remove_taints=[TaintRemoveSpec(key="ghost", effect="NoExecute")],
+    )
+    body = kube.patch_node.call_args[0][1]
+    keys = {(t["key"], t["effect"]) for t in body["spec"]["taints"]}
+    assert keys == {("keep", "NoSchedule")}
+    assert any(t.key == "keep" for t in result.taints)
+
+
+def test_taint_node_no_op_when_nothing_provided():
+    kube = _make_kube()
+    kube.read_node.return_value = _make_node("n", taints=[_make_taint("gpu", "NoSchedule", "true")])
+    result = _svc().taint_node("test", "n", kube, set_taints=[], remove_taints=[])
+    kube.patch_node.assert_not_called()
+    assert any(t.key == "gpu" for t in result.taints)
+
+
+def test_taint_node_raises_node_not_found_on_404():
+    kube = _make_kube()
+    kube.read_node.side_effect = _api_error(404)
+    with pytest.raises(NodeNotFoundException):
+        _svc().taint_node(
+            "test", "missing", kube,
+            set_taints=[TaintSpec(key="gpu", effect="NoSchedule")],
+            remove_taints=[],
+        )
+
+
+def test_taint_node_raises_kube_api_exception_on_read_500():
+    kube = _make_kube()
+    kube.read_node.side_effect = _api_error(500)
+    with pytest.raises(KubeApiException):
+        _svc().taint_node(
+            "test", "n", kube,
+            set_taints=[TaintSpec(key="gpu", effect="NoSchedule")],
+            remove_taints=[],
+        )
+
+
+def test_taint_node_raises_kube_api_exception_on_patch_500():
+    kube = _make_kube()
+    kube.read_node.return_value = _make_node("n", taints=[])
+    kube.patch_node.side_effect = _api_error(500)
+    with pytest.raises(KubeApiException):
+        _svc().taint_node(
+            "test", "n", kube,
+            set_taints=[TaintSpec(key="gpu", effect="NoSchedule")],
+            remove_taints=[],
+        )

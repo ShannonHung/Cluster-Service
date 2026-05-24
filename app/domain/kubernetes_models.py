@@ -160,6 +160,38 @@ class NodeMetadataData(BaseModel):
     annotations: dict[str, str] = Field(default_factory=dict)
 
 
+class TaintSpec(BaseModel):
+    """A single node taint (set form). ``(key, effect)`` is the unique key."""
+
+    key: str
+    value: Optional[str] = None
+    effect: Literal["NoSchedule", "PreferNoSchedule", "NoExecute"]
+
+
+class TaintRemoveSpec(BaseModel):
+    """Identifies a taint to remove by its unique ``(key, effect)``."""
+
+    key: str
+    effect: Literal["NoSchedule", "PreferNoSchedule", "NoExecute"]
+
+
+class NodeTaintRequest(BaseModel):
+    """HTTP request body for PATCH …/taints."""
+
+    set: list[TaintSpec] = Field(default_factory=list, description="Taints to add or overwrite.")
+    remove: list[TaintRemoveSpec] = Field(default_factory=list, description="Taints to remove by key+effect.")
+
+
+class NodeTaintData(BaseModel):
+    """Response for PATCH …/taints — the node's current taints after the patch."""
+
+    status: str = "success"
+    cluster: str
+    node: str
+    action: str = "taint"
+    taints: list[TaintSpec] = Field(default_factory=list)
+
+
 class NodeCondition(BaseModel):
     """Summarised condition entry for a node."""
 
@@ -195,13 +227,22 @@ class PodInfo(BaseModel):
     ready: bool = False               # True when all containers are Ready
     owner_kind: Optional[str] = None  # ReplicaSet | DaemonSet | StatefulSet | Job | None
     restart_count: int = 0            # sum of restarts across all containers
+    node_name: str = ""               # node the pod is scheduled on (spec.nodeName)
+
+
+class PodListData(BaseModel):
+    """Response body for GET /api/v1/clusters/{cluster}/pods."""
+
+    cluster: str
+    namespace: str
+    pods: list[PodInfo] = Field(default_factory=list)
 
 
 class NodeDetailData(BaseModel):
-    """Full node detail including all node attributes and its running pods.
+    """Full node detail (node attributes only; pods are queried separately).
 
     Used by GET …/{cluster}/nodes/{node}.
-    Shares the same leaf fields as NodeInfo, adding annotations and pods.
+    Shares the same leaf fields as NodeInfo, adding annotations.
     """
 
     cluster: str
@@ -212,7 +253,6 @@ class NodeDetailData(BaseModel):
     unschedulable: bool = False
     labels: dict[str, str] = Field(default_factory=dict)
     annotations: dict[str, str] = Field(default_factory=dict)
-    pods: list[PodInfo] = Field(default_factory=list)
 
 
 class ClusterInfo(BaseModel):

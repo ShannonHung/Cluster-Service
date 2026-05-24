@@ -10,6 +10,7 @@ Operations:
   - drain       : cordon + evict/delete eligible pods → return pod list
   - label_node  : arbitrary set / remove of node labels
   - annotate_node: arbitrary set / remove of node annotations
+  - taint_node  : set / remove node taints (recomputes spec.taints list)
 
 Design decisions
 ──────────────────
@@ -39,7 +40,11 @@ from app.domain.kubernetes_models import (
     NodeInfo,
     NodeListData,
     NodeMetadataData,
+    NodeTaintData,
     PodInfo,
+    PodListData,
+    TaintRemoveSpec,
+    TaintSpec,
 )
 
 _logger = logging.getLogger(__name__)
@@ -84,10 +89,67 @@ class NodeService:
         _logger.info("Listed %d node(s) | cluster=%s", len(nodes), cluster)
         return NodeListData(cluster=cluster, nodes=nodes)
 
+    def list_pods(
+        self,
+        cluster: str,
+        namespace: str,
+        kube: CoreV1Api,
+        nodes: list[str] | None = None,
+        statuses: list[str] | None = None,
+        name_prefixes: list[str] | None = None,
+    ) -> PodListData:
+        """List pods in *namespace*, filtered by node / status / name prefix.
+
+        When ``namespace == "*"`` lists pods across all namespaces; otherwise
+        scopes to the single namespace.
+
+        Filter semantics: values within a parameter are OR'd; the three
+        parameters are AND'd. An empty/None parameter does not filter that
+        dimension. ``statuses`` matches pod phase, case-insensitive.
+        ``name_prefixes`` is a prefix match.
+
+        Raises:
+            KubeApiException: On Kubernetes API failure.
+        """
+        try:
+            if namespace == "*":
+                pod_list = kube.list_pod_for_all_namespaces()
+            else:
+                pod_list = kube.list_namespaced_pod(namespace)
+        except ApiException as exc:
+            raise KubeApiException(
+                f"Failed to list pods in namespace '{namespace}' "
+                f"of cluster '{cluster}': {exc.reason}",
+                kube_status=exc.status,
+            ) from exc
+
+        node_set = set(nodes) if nodes else None
+        status_set = {s.lower() for s in statuses} if statuses else None
+        prefixes = tuple(name_prefixes) if name_prefixes else None
+
+        pods: list[PodInfo] = []
+        for raw in pod_list.items:
+            info = self._pod_to_info(raw)
+            if node_set is not None and info.node_name not in node_set:
+                continue
+            if status_set is not None and info.phase.lower() not in status_set:
+                continue
+            if prefixes is not None and not info.name.startswith(prefixes):
+                continue
+            pods.append(info)
+
+        _logger.info(
+            "Listed %d pod(s) | cluster=%s | namespace=%s",
+            len(pods), cluster, namespace,
+        )
+        return PodListData(cluster=cluster, namespace=namespace, pods=pods)
+
     # ── Single node detail ────────────────────────────────────────────────────
 
     def get_node(self, cluster: str, node_name: str, kube: CoreV1Api) -> NodeDetailData:
-        """Fetch full detail for a single node including all its pods.
+        """Fetch full detail for a single node (node attributes only).
+
+        Pods are queried via the dedicated pods endpoint, not here.
 
         Raises:
             NodeNotFoundException: If the node does not exist.
@@ -105,19 +167,8 @@ class NodeService:
                 kube_status=exc.status,
             ) from exc
 
-        try:
-            pod_list = kube.list_pod_for_all_namespaces(
-                field_selector=f"spec.nodeName={node_name}"
-            )
-        except ApiException as exc:
-            raise KubeApiException(
-                f"Failed to list pods on node '{node_name}': {exc.reason}",
-                kube_status=exc.status,
-            ) from exc
-
-        pods = [self._pod_to_info(p) for p in pod_list.items]
         info = self._node_to_info(node)
-        _logger.info("Got node detail | cluster=%s | node=%s | pods=%d", cluster, node_name, len(pods))
+        _logger.info("Got node detail | cluster=%s | node=%s", cluster, node_name)
         return NodeDetailData(
             cluster=cluster,
             name=info.name,
@@ -127,7 +178,6 @@ class NodeService:
             unschedulable=info.unschedulable,
             labels=info.labels,
             annotations=info.annotations,
-            pods=pods,
         )
 
     # ── Cordon ────────────────────────────────────────────────────────────────
@@ -351,6 +401,61 @@ class NodeService:
             annotations=current_annotations,
         )
 
+    # ── Taint management ──────────────────────────────────────────────────────
+
+    def taint_node(
+        self,
+        cluster: str,
+        node_name: str,
+        kube: CoreV1Api,
+        set_taints: list[TaintSpec] | None = None,
+        remove_taints: list[TaintRemoveSpec] | None = None,
+    ) -> NodeTaintData:
+        """Set / remove taints on *node_name*; return current taints.
+
+        ``spec.taints`` is a list, not a map, so we read the current taints,
+        recompute the full list (remove first, then set — keyed by
+        ``(key, effect)`` so a set overwrites an existing taint's value), and
+        patch the whole list. Empty set+remove skips the patch.
+
+        Raises:
+            NodeNotFoundException: Node does not exist.
+            KubeApiException: On Kubernetes API failure.
+        """
+        set_taints = set_taints or []
+        remove_taints = remove_taints or []
+
+        current = self._read_node(cluster, node_name, kube)
+        existing = current.spec.taints or []
+
+        by_id: dict[tuple[str, str], dict] = {}
+        for t in existing:
+            by_id[(t.key, t.effect)] = {"key": t.key, "value": t.value, "effect": t.effect}
+
+        if set_taints or remove_taints:
+            for r in remove_taints:
+                by_id.pop((r.key, r.effect), None)
+            for s in set_taints:
+                by_id[(s.key, s.effect)] = {"key": s.key, "value": s.value, "effect": s.effect}
+
+            new_taints = list(by_id.values())
+            try:
+                kube.patch_node(node_name, {"spec": {"taints": new_taints}})
+            except ApiException as exc:
+                if exc.status == 404:
+                    raise NodeNotFoundException(
+                        f"Node '{node_name}' not found in cluster '{cluster}'.",
+                    ) from exc
+                raise KubeApiException(
+                    f"Failed to patch taints on node '{node_name}': {exc.reason}",
+                    kube_status=exc.status,
+                ) from exc
+            current = self._read_node(cluster, node_name, kube)
+            _logger.info("Patched taints | cluster=%s | node=%s", cluster, node_name)
+
+        taints = [self._to_taint_spec(t) for t in (current.spec.taints or [])]
+        return NodeTaintData(cluster=cluster, node=node_name, taints=taints)
+
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _patch_unschedulable(
@@ -459,6 +564,25 @@ class NodeService:
                 kube_status=exc.status,
             ) from exc
         return (node.metadata.labels or {}, node.metadata.annotations or {})
+
+    def _read_node(self, cluster: str, node_name: str, kube: CoreV1Api):
+        """Read a node, mapping 404 → NodeNotFoundException."""
+        try:
+            return kube.read_node(node_name)
+        except ApiException as exc:
+            if exc.status == 404:
+                raise NodeNotFoundException(
+                    f"Node '{node_name}' not found in cluster '{cluster}'.",
+                ) from exc
+            raise KubeApiException(
+                f"Failed to read node '{node_name}': {exc.reason}",
+                kube_status=exc.status,
+            ) from exc
+
+    @staticmethod
+    def _to_taint_spec(taint) -> TaintSpec:
+        """Convert a V1Taint (or fake) to a TaintSpec."""
+        return TaintSpec(key=taint.key, value=taint.value, effect=taint.effect)
 
     def _evict_or_delete(
         self,
@@ -598,4 +722,5 @@ class NodeService:
             ready=ready,
             owner_kind=owner_kind,
             restart_count=restart_count,
+            node_name=(pod.spec.node_name or "") if pod.spec else "",
         )
