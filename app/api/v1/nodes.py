@@ -4,7 +4,7 @@ app/api/v1/nodes.py
 Node-level operation endpoints (v1).
 
 Routes:
-  GET   /api/v1/clusters/{cluster}/nodes/{node}             → get node detail + pods
+  GET   /api/v1/clusters/{cluster}/nodes/{node}             → get node detail (no pods)
   POST  /api/v1/clusters/{cluster}/nodes/{node}/cordon      → cordon a node
   POST  /api/v1/clusters/{cluster}/nodes/{node}/uncordon    → uncordon a node
   POST  /api/v1/clusters/{cluster}/nodes/{node}/drain       → drain a node
@@ -70,8 +70,8 @@ def _request_id(request: Request) -> str:
     summary="Get node detail",
     description=(
         "Returns full node information — status, roles, kubelet version, labels, "
-        "annotations, schedulability — together with all pods currently assigned "
-        "to the node (name, namespace, phase, readiness, owner, restart count)."
+        "annotations, schedulability. Pods are queried via "
+        "GET /clusters/{cluster}/pods."
     ),
 )
 async def get_node(
