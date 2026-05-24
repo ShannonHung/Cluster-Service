@@ -10,6 +10,7 @@ Operations:
   - drain       : cordon + evict/delete eligible pods → return pod list
   - label_node  : arbitrary set / remove of node labels
   - annotate_node: arbitrary set / remove of node annotations
+  - taint_node  : set / remove node taints (recomputes spec.taints list)
 
 Design decisions
 ──────────────────
@@ -42,6 +43,7 @@ from app.domain.kubernetes_models import (
     NodeTaintData,
     PodInfo,
     PodListData,
+    TaintRemoveSpec,
     TaintSpec,
 )
 
@@ -407,7 +409,7 @@ class NodeService:
         node_name: str,
         kube: CoreV1Api,
         set_taints: list[TaintSpec] | None = None,
-        remove_taints: list | None = None,
+        remove_taints: list[TaintRemoveSpec] | None = None,
     ) -> NodeTaintData:
         """Set / remove taints on *node_name*; return current taints.
 
@@ -449,9 +451,9 @@ class NodeService:
                     kube_status=exc.status,
                 ) from exc
             current = self._read_node(cluster, node_name, kube)
+            _logger.info("Patched taints | cluster=%s | node=%s", cluster, node_name)
 
         taints = [self._to_taint_spec(t) for t in (current.spec.taints or [])]
-        _logger.info("Patched taints | cluster=%s | node=%s", cluster, node_name)
         return NodeTaintData(cluster=cluster, node=node_name, taints=taints)
 
     # ── Private helpers ───────────────────────────────────────────────────────
