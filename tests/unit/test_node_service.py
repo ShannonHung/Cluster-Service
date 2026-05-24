@@ -494,3 +494,10 @@ def test_list_pods_raises_on_api_error():
     kube.list_namespaced_pod.side_effect = _api_error(500)
     with pytest.raises(KubeApiException):
         _svc().list_pods(cluster="test", namespace="default", kube=kube)
+
+
+def test_list_pods_wildcard_raises_on_api_error():
+    kube = _make_kube()
+    kube.list_pod_for_all_namespaces.side_effect = _api_error(500)
+    with pytest.raises(KubeApiException):
+        _svc().list_pods(cluster="test", namespace="*", kube=kube)
