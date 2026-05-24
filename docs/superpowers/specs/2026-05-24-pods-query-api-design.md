@@ -14,9 +14,9 @@ response makes it heavy and conflates two concerns. We want:
 
 ## Endpoint
 
-```
+```text
 GET /api/v1/clusters/{cluster}/pods
-    ?namespace=foo            (required)
+    ?namespace=foo            (required; "*" means all namespaces)
     &node=node-1,node-2       (optional, comma-separated, OR)
     &status=Running,Pending   (optional, comma-separated, OR, matches pod phase)
     &pod_name=web-,api-       (optional, comma-separated, prefix match, OR)
@@ -24,6 +24,10 @@ GET /api/v1/clusters/{cluster}/pods
 
 - Scope: `cluster_api`.
 - Returns `ApiResponse[PodListData]`.
+- `namespace` is required. The literal value `*` means "all namespaces" and
+  switches the backing call to `list_pod_for_all_namespaces()`; any other value
+  scopes to that single namespace via `list_namespaced_pod(namespace)`. The
+  response echoes the requested `namespace` value (including `*`).
 - Filter semantics: values **within** one parameter are OR'd; the three
   parameters are AND'd together. Empty parameter = no filtering on that
   dimension.
@@ -34,16 +38,17 @@ GET /api/v1/clusters/{cluster}/pods
 
 ## Data flow (reuses existing layering)
 
-```
+```text
 pods.py router
   → repo.get_kube_client_config(cluster)
   → KubeClientFactory().get_core_v1(cfg)
   → NodeService.list_pods(cluster, namespace, kube, nodes, statuses, name_prefixes)
 ```
 
-`list_pods` calls `kube.list_namespaced_pod(namespace)` (lighter than
-`list_pod_for_all_namespaces`) and applies node / status / pod_name filters in
-Python. Required namespace keeps the query naturally bounded.
+`list_pods` calls `kube.list_namespaced_pod(namespace)` for a single namespace
+(lighter than the all-namespaces call), or `kube.list_pod_for_all_namespaces()`
+when `namespace == "*"`. It then applies node / status / pod_name filters in
+Python. A single required namespace keeps the common query naturally bounded.
 
 `list_pods` lives on the existing `NodeService` (reuses `_pod_to_info`); no new
 service class.
@@ -66,6 +71,7 @@ service class.
 
 - Non-existent namespace → Kubernetes returns an empty list → respond with
   `pods: []` (no error).
+- `namespace=*` → all namespaces listed, then filtered the same way.
 - Other Kubernetes API failures → existing `KubeApiException` path.
 
 ## Filtering detail
