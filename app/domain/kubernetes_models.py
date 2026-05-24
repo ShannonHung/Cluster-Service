@@ -160,6 +160,38 @@ class NodeMetadataData(BaseModel):
     annotations: dict[str, str] = Field(default_factory=dict)
 
 
+class TaintSpec(BaseModel):
+    """A single node taint (set form). ``(key, effect)`` is the unique key."""
+
+    key: str
+    value: Optional[str] = None
+    effect: Literal["NoSchedule", "PreferNoSchedule", "NoExecute"]
+
+
+class TaintRemoveSpec(BaseModel):
+    """Identifies a taint to remove by its unique ``(key, effect)``."""
+
+    key: str
+    effect: Literal["NoSchedule", "PreferNoSchedule", "NoExecute"]
+
+
+class NodeTaintRequest(BaseModel):
+    """HTTP request body for PATCH …/taints."""
+
+    set: list[TaintSpec] = Field(default_factory=list, description="Taints to add or overwrite.")
+    remove: list[TaintRemoveSpec] = Field(default_factory=list, description="Taints to remove by key+effect.")
+
+
+class NodeTaintData(BaseModel):
+    """Response for PATCH …/taints — the node's current taints after the patch."""
+
+    status: str = "success"
+    cluster: str
+    node: str
+    action: str = "taint"
+    taints: list[TaintSpec] = Field(default_factory=list)
+
+
 class NodeCondition(BaseModel):
     """Summarised condition entry for a node."""
 
