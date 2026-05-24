@@ -14,7 +14,7 @@ import pytest
 from kubernetes.client.exceptions import ApiException
 
 from app.core.exceptions import KubeApiException, NodeNotFoundException
-from app.domain.kubernetes_models import DrainActionData, DrainOptions, NodeActionData, NodeListData
+from app.domain.kubernetes_models import DrainActionData, DrainOptions, NodeActionData, NodeListData, PodListData
 from app.services.node_service import NodeService
 
 
@@ -61,6 +61,7 @@ def _make_pod(
     phase: str = "Running",
     owner_kind: str = "ReplicaSet",
     is_mirror: bool = False,
+    node_name: str = "worker-1",
 ) -> MagicMock:
     pod = MagicMock()
     pod.metadata.name = name
@@ -70,6 +71,8 @@ def _make_pod(
     owner.kind = owner_kind
     pod.metadata.owner_references = [owner]
     pod.status.phase = phase
+    pod.status.container_statuses = []
+    pod.spec.node_name = node_name
     return pod
 
 
@@ -367,3 +370,127 @@ def test_annotate_node_removes_with_null():
 
     body = kube.patch_node.call_args[0][1]
     assert body["metadata"]["annotations"]["old"] is None
+
+
+# ── list_pods ─────────────────────────────────────────────────────────────────
+
+def test_list_pods_no_filters_returns_all_in_namespace():
+    kube = _make_kube()
+    kube.list_namespaced_pod.return_value.items = [
+        _make_pod("web-1", node_name="n1"),
+        _make_pod("api-1", node_name="n2"),
+    ]
+    result = _svc().list_pods(cluster="test", namespace="default", kube=kube)
+
+    assert isinstance(result, PodListData)
+    assert result.cluster == "test"
+    assert result.namespace == "default"
+    assert {p.name for p in result.pods} == {"web-1", "api-1"}
+    kube.list_namespaced_pod.assert_called_once_with("default")
+    kube.list_pod_for_all_namespaces.assert_not_called()
+
+
+def test_list_pods_wildcard_lists_all_namespaces():
+    kube = _make_kube()
+    kube.list_pod_for_all_namespaces.return_value.items = [
+        _make_pod("web-1", namespace="default", node_name="n1"),
+        _make_pod("kube-dns", namespace="kube-system", node_name="n2"),
+    ]
+    result = _svc().list_pods(cluster="test", namespace="*", kube=kube)
+
+    assert result.namespace == "*"
+    assert {p.name for p in result.pods} == {"web-1", "kube-dns"}
+    kube.list_pod_for_all_namespaces.assert_called_once_with()
+    kube.list_namespaced_pod.assert_not_called()
+
+
+def test_list_pods_wildcard_still_applies_filters():
+    kube = _make_kube()
+    kube.list_pod_for_all_namespaces.return_value.items = [
+        _make_pod("web-1", namespace="default", node_name="n1", phase="Running"),
+        _make_pod("web-2", namespace="kube-system", node_name="n2", phase="Pending"),
+    ]
+    result = _svc().list_pods(
+        cluster="test", namespace="*", kube=kube, statuses=["Running"]
+    )
+    assert {p.name for p in result.pods} == {"web-1"}
+
+
+def test_list_pods_filters_by_node():
+    kube = _make_kube()
+    kube.list_namespaced_pod.return_value.items = [
+        _make_pod("web-1", node_name="n1"),
+        _make_pod("web-2", node_name="n2"),
+    ]
+    result = _svc().list_pods(
+        cluster="test", namespace="default", kube=kube, nodes=["n1"]
+    )
+    assert {p.name for p in result.pods} == {"web-1"}
+
+
+def test_list_pods_filters_by_multiple_nodes_or():
+    kube = _make_kube()
+    kube.list_namespaced_pod.return_value.items = [
+        _make_pod("a", node_name="n1"),
+        _make_pod("b", node_name="n2"),
+        _make_pod("c", node_name="n3"),
+    ]
+    result = _svc().list_pods(
+        cluster="test", namespace="default", kube=kube, nodes=["n1", "n2"]
+    )
+    assert {p.name for p in result.pods} == {"a", "b"}
+
+
+def test_list_pods_filters_by_status_case_insensitive():
+    kube = _make_kube()
+    kube.list_namespaced_pod.return_value.items = [
+        _make_pod("running-pod", phase="Running"),
+        _make_pod("pending-pod", phase="Pending"),
+    ]
+    result = _svc().list_pods(
+        cluster="test", namespace="default", kube=kube, statuses=["running"]
+    )
+    assert {p.name for p in result.pods} == {"running-pod"}
+
+
+def test_list_pods_filters_by_name_prefix_or():
+    kube = _make_kube()
+    kube.list_namespaced_pod.return_value.items = [
+        _make_pod("web-7d9f"),
+        _make_pod("api-xyz"),
+        _make_pod("db-1"),
+    ]
+    result = _svc().list_pods(
+        cluster="test", namespace="default", kube=kube, name_prefixes=["web-", "api-"]
+    )
+    assert {p.name for p in result.pods} == {"web-7d9f", "api-xyz"}
+
+
+def test_list_pods_filters_are_anded():
+    kube = _make_kube()
+    kube.list_namespaced_pod.return_value.items = [
+        _make_pod("web-1", node_name="n1", phase="Running"),
+        _make_pod("web-2", node_name="n2", phase="Running"),
+        _make_pod("web-3", node_name="n1", phase="Pending"),
+    ]
+    result = _svc().list_pods(
+        cluster="test", namespace="default", kube=kube,
+        nodes=["n1"], statuses=["Running"], name_prefixes=["web-"],
+    )
+    assert {p.name for p in result.pods} == {"web-1"}
+
+
+def test_list_pods_empty_when_no_match():
+    kube = _make_kube()
+    kube.list_namespaced_pod.return_value.items = [_make_pod("web-1", node_name="n1")]
+    result = _svc().list_pods(
+        cluster="test", namespace="default", kube=kube, nodes=["nonexistent"]
+    )
+    assert result.pods == []
+
+
+def test_list_pods_raises_on_api_error():
+    kube = _make_kube()
+    kube.list_namespaced_pod.side_effect = _api_error(500)
+    with pytest.raises(KubeApiException):
+        _svc().list_pods(cluster="test", namespace="default", kube=kube)

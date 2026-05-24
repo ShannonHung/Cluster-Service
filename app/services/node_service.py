@@ -40,6 +40,7 @@ from app.domain.kubernetes_models import (
     NodeListData,
     NodeMetadataData,
     PodInfo,
+    PodListData,
 )
 
 _logger = logging.getLogger(__name__)
@@ -83,6 +84,61 @@ class NodeService:
         nodes = [self._node_to_info(n) for n in node_list.items]
         _logger.info("Listed %d node(s) | cluster=%s", len(nodes), cluster)
         return NodeListData(cluster=cluster, nodes=nodes)
+
+    def list_pods(
+        self,
+        cluster: str,
+        namespace: str,
+        kube: CoreV1Api,
+        nodes: list[str] | None = None,
+        statuses: list[str] | None = None,
+        name_prefixes: list[str] | None = None,
+    ) -> PodListData:
+        """List pods in *namespace*, filtered by node / status / name prefix.
+
+        When ``namespace == "*"`` lists pods across all namespaces; otherwise
+        scopes to the single namespace.
+
+        Filter semantics: values within a parameter are OR'd; the three
+        parameters are AND'd. An empty/None parameter does not filter that
+        dimension. ``statuses`` matches pod phase, case-insensitive.
+        ``name_prefixes`` is a prefix match.
+
+        Raises:
+            KubeApiException: On Kubernetes API failure.
+        """
+        try:
+            if namespace == "*":
+                pod_list = kube.list_pod_for_all_namespaces()
+            else:
+                pod_list = kube.list_namespaced_pod(namespace)
+        except ApiException as exc:
+            raise KubeApiException(
+                f"Failed to list pods in namespace '{namespace}' "
+                f"of cluster '{cluster}': {exc.reason}",
+                kube_status=exc.status,
+            ) from exc
+
+        node_set = set(nodes) if nodes else None
+        status_set = {s.lower() for s in statuses} if statuses else None
+        prefixes = tuple(name_prefixes) if name_prefixes else None
+
+        pods: list[PodInfo] = []
+        for raw in pod_list.items:
+            info = self._pod_to_info(raw)
+            if node_set is not None and info.node_name not in node_set:
+                continue
+            if status_set is not None and info.phase.lower() not in status_set:
+                continue
+            if prefixes is not None and not info.name.startswith(prefixes):
+                continue
+            pods.append(info)
+
+        _logger.info(
+            "Listed %d pod(s) | cluster=%s | namespace=%s",
+            len(pods), cluster, namespace,
+        )
+        return PodListData(cluster=cluster, namespace=namespace, pods=pods)
 
     # ── Single node detail ────────────────────────────────────────────────────
 
