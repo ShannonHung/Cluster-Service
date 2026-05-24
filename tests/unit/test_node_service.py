@@ -14,7 +14,7 @@ import pytest
 from kubernetes.client.exceptions import ApiException
 
 from app.core.exceptions import KubeApiException, NodeNotFoundException
-from app.domain.kubernetes_models import DrainActionData, DrainOptions, NodeActionData, NodeListData, PodListData
+from app.domain.kubernetes_models import DrainActionData, DrainOptions, NodeActionData, NodeListData, NodeTaintData, PodListData, TaintSpec
 from app.services.node_service import NodeService
 
 
@@ -37,6 +37,7 @@ def _make_node(
     roles: list[str] | None = None,
     labels: dict[str, str] | None = None,
     annotations: dict[str, str] | None = None,
+    taints: list | None = None,
 ) -> MagicMock:
     node = MagicMock()
     node.metadata.name = name
@@ -46,6 +47,7 @@ def _make_node(
     node.metadata.annotations = annotations or {}
     node.metadata.owner_references = None
     node.spec.unschedulable = unschedulable
+    node.spec.taints = taints if taints is not None else []
     cond = MagicMock()
     cond.type = "Ready"
     cond.status = "True" if ready else "False"
@@ -53,6 +55,14 @@ def _make_node(
     node.status.node_info = MagicMock()
     node.status.node_info.kubelet_version = kubelet_version
     return node
+
+
+def _make_taint(key: str, effect: str, value: str | None = None) -> MagicMock:
+    t = MagicMock()
+    t.key = key
+    t.value = value
+    t.effect = effect
+    return t
 
 
 def _make_pod(
@@ -501,3 +511,115 @@ def test_list_pods_wildcard_raises_on_api_error():
     kube.list_pod_for_all_namespaces.side_effect = _api_error(500)
     with pytest.raises(KubeApiException):
         _svc().list_pods(cluster="test", namespace="*", kube=kube)
+
+
+# ── taint_node ────────────────────────────────────────────────────────────────
+
+def test_taint_node_adds_new_taint():
+    kube = _make_kube()
+    kube.read_node.side_effect = [
+        _make_node("n", taints=[]),
+        _make_node("n", taints=[_make_taint("gpu", "NoSchedule", "true")]),
+    ]
+    from app.domain.kubernetes_models import TaintSpec
+    result = _svc().taint_node(
+        "test", "n", kube,
+        set_taints=[TaintSpec(key="gpu", value="true", effect="NoSchedule")],
+        remove_taints=[],
+    )
+    body = kube.patch_node.call_args[0][1]
+    taints = body["spec"]["taints"]
+    assert {(t["key"], t["effect"], t.get("value")) for t in taints} == {("gpu", "NoSchedule", "true")}
+    assert result.action == "taint"
+    assert any(t.key == "gpu" and t.effect == "NoSchedule" for t in result.taints)
+
+
+def test_taint_node_removes_by_key_and_effect():
+    kube = _make_kube()
+    kube.read_node.side_effect = [
+        _make_node("n", taints=[_make_taint("gpu", "NoSchedule", "true")]),
+        _make_node("n", taints=[]),
+    ]
+    from app.domain.kubernetes_models import TaintRemoveSpec
+    result = _svc().taint_node(
+        "test", "n", kube,
+        set_taints=[],
+        remove_taints=[TaintRemoveSpec(key="gpu", effect="NoSchedule")],
+    )
+    body = kube.patch_node.call_args[0][1]
+    assert body["spec"]["taints"] == []
+    assert result.taints == []
+
+
+def test_taint_node_same_key_effect_overwrites_value():
+    kube = _make_kube()
+    kube.read_node.side_effect = [
+        _make_node("n", taints=[_make_taint("gpu", "NoSchedule", "old")]),
+        _make_node("n", taints=[_make_taint("gpu", "NoSchedule", "new")]),
+    ]
+    from app.domain.kubernetes_models import TaintSpec
+    _svc().taint_node(
+        "test", "n", kube,
+        set_taints=[TaintSpec(key="gpu", value="new", effect="NoSchedule")],
+        remove_taints=[],
+    )
+    body = kube.patch_node.call_args[0][1]
+    taints = body["spec"]["taints"]
+    matching = [t for t in taints if t["key"] == "gpu" and t["effect"] == "NoSchedule"]
+    assert len(matching) == 1
+    assert matching[0]["value"] == "new"
+
+
+def test_taint_node_set_and_remove_together():
+    kube = _make_kube()
+    kube.read_node.side_effect = [
+        _make_node("n", taints=[_make_taint("old", "NoSchedule", None)]),
+        _make_node("n", taints=[_make_taint("new", "NoExecute", "1")]),
+    ]
+    from app.domain.kubernetes_models import TaintSpec, TaintRemoveSpec
+    _svc().taint_node(
+        "test", "n", kube,
+        set_taints=[TaintSpec(key="new", value="1", effect="NoExecute")],
+        remove_taints=[TaintRemoveSpec(key="old", effect="NoSchedule")],
+    )
+    body = kube.patch_node.call_args[0][1]
+    keys = {(t["key"], t["effect"]) for t in body["spec"]["taints"]}
+    assert keys == {("new", "NoExecute")}
+
+
+def test_taint_node_remove_nonexistent_is_noop_not_error():
+    kube = _make_kube()
+    kube.read_node.side_effect = [
+        _make_node("n", taints=[_make_taint("keep", "NoSchedule", None)]),
+        _make_node("n", taints=[_make_taint("keep", "NoSchedule", None)]),
+    ]
+    from app.domain.kubernetes_models import TaintRemoveSpec
+    result = _svc().taint_node(
+        "test", "n", kube,
+        set_taints=[],
+        remove_taints=[TaintRemoveSpec(key="ghost", effect="NoExecute")],
+    )
+    body = kube.patch_node.call_args[0][1]
+    keys = {(t["key"], t["effect"]) for t in body["spec"]["taints"]}
+    assert keys == {("keep", "NoSchedule")}
+    assert any(t.key == "keep" for t in result.taints)
+
+
+def test_taint_node_no_op_when_nothing_provided():
+    kube = _make_kube()
+    kube.read_node.return_value = _make_node("n", taints=[_make_taint("gpu", "NoSchedule", "true")])
+    result = _svc().taint_node("test", "n", kube, set_taints=[], remove_taints=[])
+    kube.patch_node.assert_not_called()
+    assert any(t.key == "gpu" for t in result.taints)
+
+
+def test_taint_node_raises_node_not_found_on_404():
+    kube = _make_kube()
+    kube.read_node.side_effect = _api_error(404)
+    from app.domain.kubernetes_models import TaintSpec
+    with pytest.raises(NodeNotFoundException):
+        _svc().taint_node(
+            "test", "missing", kube,
+            set_taints=[TaintSpec(key="gpu", effect="NoSchedule")],
+            remove_taints=[],
+        )

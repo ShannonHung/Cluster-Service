@@ -39,8 +39,10 @@ from app.domain.kubernetes_models import (
     NodeInfo,
     NodeListData,
     NodeMetadataData,
+    NodeTaintData,
     PodInfo,
     PodListData,
+    TaintSpec,
 )
 
 _logger = logging.getLogger(__name__)
@@ -397,6 +399,61 @@ class NodeService:
             annotations=current_annotations,
         )
 
+    # ── Taint management ──────────────────────────────────────────────────────
+
+    def taint_node(
+        self,
+        cluster: str,
+        node_name: str,
+        kube: CoreV1Api,
+        set_taints: list[TaintSpec] | None = None,
+        remove_taints: list | None = None,
+    ) -> NodeTaintData:
+        """Set / remove taints on *node_name*; return current taints.
+
+        ``spec.taints`` is a list, not a map, so we read the current taints,
+        recompute the full list (remove first, then set — keyed by
+        ``(key, effect)`` so a set overwrites an existing taint's value), and
+        patch the whole list. Empty set+remove skips the patch.
+
+        Raises:
+            NodeNotFoundException: Node does not exist.
+            KubeApiException: On Kubernetes API failure.
+        """
+        set_taints = set_taints or []
+        remove_taints = remove_taints or []
+
+        current = self._read_node(cluster, node_name, kube)
+        existing = current.spec.taints or []
+
+        by_id: dict[tuple[str, str], dict] = {}
+        for t in existing:
+            by_id[(t.key, t.effect)] = {"key": t.key, "value": t.value, "effect": t.effect}
+
+        if set_taints or remove_taints:
+            for r in remove_taints:
+                by_id.pop((r.key, r.effect), None)
+            for s in set_taints:
+                by_id[(s.key, s.effect)] = {"key": s.key, "value": s.value, "effect": s.effect}
+
+            new_taints = list(by_id.values())
+            try:
+                kube.patch_node(node_name, {"spec": {"taints": new_taints}})
+            except ApiException as exc:
+                if exc.status == 404:
+                    raise NodeNotFoundException(
+                        f"Node '{node_name}' not found in cluster '{cluster}'.",
+                    ) from exc
+                raise KubeApiException(
+                    f"Failed to patch taints on node '{node_name}': {exc.reason}",
+                    kube_status=exc.status,
+                ) from exc
+            current = self._read_node(cluster, node_name, kube)
+
+        taints = [self._to_taint_spec(t) for t in (current.spec.taints or [])]
+        _logger.info("Patched taints | cluster=%s | node=%s", cluster, node_name)
+        return NodeTaintData(cluster=cluster, node=node_name, taints=taints)
+
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _patch_unschedulable(
@@ -505,6 +562,25 @@ class NodeService:
                 kube_status=exc.status,
             ) from exc
         return (node.metadata.labels or {}, node.metadata.annotations or {})
+
+    def _read_node(self, cluster: str, node_name: str, kube: CoreV1Api):
+        """Read a node, mapping 404 → NodeNotFoundException."""
+        try:
+            return kube.read_node(node_name)
+        except ApiException as exc:
+            if exc.status == 404:
+                raise NodeNotFoundException(
+                    f"Node '{node_name}' not found in cluster '{cluster}'.",
+                ) from exc
+            raise KubeApiException(
+                f"Failed to read node '{node_name}': {exc.reason}",
+                kube_status=exc.status,
+            ) from exc
+
+    @staticmethod
+    def _to_taint_spec(taint) -> TaintSpec:
+        """Convert a V1Taint (or fake) to a TaintSpec."""
+        return TaintSpec(key=taint.key, value=taint.value, effect=taint.effect)
 
     def _evict_or_delete(
         self,
