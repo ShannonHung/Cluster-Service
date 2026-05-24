@@ -195,13 +195,22 @@ class PodInfo(BaseModel):
     ready: bool = False               # True when all containers are Ready
     owner_kind: Optional[str] = None  # ReplicaSet | DaemonSet | StatefulSet | Job | None
     restart_count: int = 0            # sum of restarts across all containers
+    node_name: str = ""               # node the pod is scheduled on (spec.nodeName)
+
+
+class PodListData(BaseModel):
+    """Response body for GET /api/v1/clusters/{cluster}/pods."""
+
+    cluster: str
+    namespace: str
+    pods: list[PodInfo] = Field(default_factory=list)
 
 
 class NodeDetailData(BaseModel):
-    """Full node detail including all node attributes and its running pods.
+    """Full node detail (node attributes only; pods are queried separately).
 
     Used by GET …/{cluster}/nodes/{node}.
-    Shares the same leaf fields as NodeInfo, adding annotations and pods.
+    Shares the same leaf fields as NodeInfo, adding annotations.
     """
 
     cluster: str
@@ -212,7 +221,6 @@ class NodeDetailData(BaseModel):
     unschedulable: bool = False
     labels: dict[str, str] = Field(default_factory=dict)
     annotations: dict[str, str] = Field(default_factory=dict)
-    pods: list[PodInfo] = Field(default_factory=list)
 
 
 class ClusterInfo(BaseModel):
