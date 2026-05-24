@@ -87,7 +87,9 @@ class NodeService:
     # ── Single node detail ────────────────────────────────────────────────────
 
     def get_node(self, cluster: str, node_name: str, kube: CoreV1Api) -> NodeDetailData:
-        """Fetch full detail for a single node including all its pods.
+        """Fetch full detail for a single node (node attributes only).
+
+        Pods are queried via the dedicated pods endpoint, not here.
 
         Raises:
             NodeNotFoundException: If the node does not exist.
@@ -105,19 +107,8 @@ class NodeService:
                 kube_status=exc.status,
             ) from exc
 
-        try:
-            pod_list = kube.list_pod_for_all_namespaces(
-                field_selector=f"spec.nodeName={node_name}"
-            )
-        except ApiException as exc:
-            raise KubeApiException(
-                f"Failed to list pods on node '{node_name}': {exc.reason}",
-                kube_status=exc.status,
-            ) from exc
-
-        pods = [self._pod_to_info(p) for p in pod_list.items]
         info = self._node_to_info(node)
-        _logger.info("Got node detail | cluster=%s | node=%s | pods=%d", cluster, node_name, len(pods))
+        _logger.info("Got node detail | cluster=%s | node=%s", cluster, node_name)
         return NodeDetailData(
             cluster=cluster,
             name=info.name,
@@ -127,7 +118,6 @@ class NodeService:
             unschedulable=info.unschedulable,
             labels=info.labels,
             annotations=info.annotations,
-            pods=pods,
         )
 
     # ── Cordon ────────────────────────────────────────────────────────────────
@@ -598,4 +588,5 @@ class NodeService:
             ready=ready,
             owner_kind=owner_kind,
             restart_count=restart_count,
+            node_name=(pod.spec.node_name or "") if pod.spec else "",
         )

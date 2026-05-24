@@ -80,6 +80,21 @@ def _api_error(status: int, reason: str = "error") -> ApiException:
     return exc
 
 
+# ── get_node ──────────────────────────────────────────────────────────────────
+
+def test_get_node_returns_detail_without_pods():
+    kube = _make_kube()
+    kube.read_node.return_value = _make_node("worker-1", labels={"env": "prod"})
+    result = _svc().get_node(cluster="test", node_name="worker-1", kube=kube)
+
+    assert result.cluster == "test"
+    assert result.name == "worker-1"
+    assert result.labels == {"env": "prod"}
+    # Node detail must NOT list pods anymore, and must not query pods.
+    assert not hasattr(result, "pods")
+    kube.list_pod_for_all_namespaces.assert_not_called()
+
+
 # ── list_nodes ────────────────────────────────────────────────────────────────
 
 def test_list_nodes_returns_node_list():
