@@ -19,6 +19,7 @@ Route layout:
   POST /api/v1/clusters/{cluster}/nodes/{node}/uncordon        → Uncordon a node
   POST /api/v1/clusters/{cluster}/nodes/{node}/drain           → Drain a node
   GET  /api/v1/clusters/{cluster}/pods                         → List pods in a namespace (filtered)
+  PATCH /api/v1/clusters/{cluster}/nodes/{node}/taints         → Set or remove node taints
 """
 
 from __future__ import annotations
