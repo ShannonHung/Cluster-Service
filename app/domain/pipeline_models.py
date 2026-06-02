@@ -57,6 +57,16 @@ class JobData(BaseModel):
     status: str
 
 
+class DownstreamPipelineRef(BaseModel):
+    """A downstream pipeline triggered by a bridge job in the parent pipeline."""
+
+    id: int
+    status: str
+    project_id: int
+    web_url: str = ""
+    bridge_name: str = ""
+
+
 class PipelineData(BaseModel):
     """Pipeline summary returned by all deploy endpoints."""
 
@@ -77,6 +87,10 @@ class PipelineData(BaseModel):
     jobs: list[JobData] = Field(
         default_factory=list,
         description="All jobs associated with this pipeline.",
+    )
+    downstream_pipelines: list[DownstreamPipelineRef] = Field(
+        default_factory=list,
+        description="Downstream pipelines triggered by bridge jobs in this pipeline.",
     )
     ref_name: str = ""
     web_url: str = ""
