@@ -21,8 +21,7 @@ from app.services.node_service import NodeService
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _svc() -> NodeService:
-    """Default service with test-friendly label values."""
-    return NodeService(cordon_label_reason="PM", cordon_label_by="infra")
+    return NodeService()
 
 
 def _make_kube() -> MagicMock:
@@ -150,39 +149,15 @@ def test_list_nodes_raises_on_api_error():
 
 # ── cordon ────────────────────────────────────────────────────────────────────
 
-def test_cordon_makes_two_patch_calls():
-    """First patch: unschedulable=True. Second patch: cordon labels."""
+def test_cordon_patches_unschedulable_true():
     kube = _make_kube()
     result = _svc().cordon(cluster="test", node_name="worker-1", kube=kube)
 
-    assert kube.patch_node.call_count == 2
-    # First call marks unschedulable
-    first_body = kube.patch_node.call_args_list[0][0][1]
-    assert first_body == {"spec": {"unschedulable": True}}
-    # Result
+    assert kube.patch_node.call_count == 1
+    body = kube.patch_node.call_args_list[0][0][1]
+    assert body == {"spec": {"unschedulable": True}}
     assert isinstance(result, NodeActionData)
     assert result.action == "cordon"
-
-
-def test_cordon_applies_configurable_labels():
-    kube = _make_kube()
-    _svc().cordon(cluster="test", node_name="worker-1", kube=kube)
-
-    second_body = kube.patch_node.call_args_list[1][0][1]
-    labels = second_body["metadata"]["labels"]
-    assert labels["cordon_reason"] == "PM"
-    assert labels["cordon_by"] == "infra"
-
-
-def test_cordon_custom_label_values():
-    """Label values come from the constructor, not hardcoded."""
-    svc = NodeService(cordon_label_reason="MAINTENANCE", cordon_label_by="ops-team")
-    kube = _make_kube()
-    svc.cordon(cluster="test", node_name="n", kube=kube)
-    second_body = kube.patch_node.call_args_list[1][0][1]
-    labels = second_body["metadata"]["labels"]
-    assert labels["cordon_reason"] == "MAINTENANCE"
-    assert labels["cordon_by"] == "ops-team"
 
 
 def test_cordon_raises_node_not_found_on_404():
@@ -205,20 +180,10 @@ def test_uncordon_patches_unschedulable_false():
     kube = _make_kube()
     result = _svc().uncordon(cluster="test", node_name="worker-1", kube=kube)
 
-    first_body = kube.patch_node.call_args_list[0][0][1]
-    assert first_body == {"spec": {"unschedulable": False}}
+    assert kube.patch_node.call_count == 1
+    body = kube.patch_node.call_args_list[0][0][1]
+    assert body == {"spec": {"unschedulable": False}}
     assert result.action == "uncordon"
-
-
-def test_uncordon_removes_cordon_labels():
-    kube = _make_kube()
-    _svc().uncordon(cluster="test", node_name="worker-1", kube=kube)
-
-    # Second patch should null-out both label keys.
-    second_body = kube.patch_node.call_args_list[1][0][1]
-    labels = second_body["metadata"]["labels"]
-    assert labels["cordon_reason"] is None
-    assert labels["cordon_by"] is None
 
 
 def test_uncordon_raises_node_not_found_on_404():

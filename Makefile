@@ -1,7 +1,7 @@
 # ─── Cluster Service Makefile ────────────────────────────────────────────────
 # 前置條件：uv 已安裝 (curl -LsSf https://astral.sh/uv/install.sh | sh)
 
-UV     := source $$HOME/.local/bin/env && uv
+UV     := uv
 PYTHON := $(UV) run python
 PYTEST := $(UV) run pytest
 

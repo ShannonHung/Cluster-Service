@@ -5,8 +5,8 @@ NodeService — implements Kubernetes node operations.
 
 Operations:
   - list_nodes  : list all nodes with labels included in response
-  - cordon      : mark node unschedulable + stamp configurable labels
-  - uncordon    : re-enable scheduling + remove cordon labels
+  - cordon      : mark node unschedulable
+  - uncordon    : re-enable scheduling
   - drain       : cordon + evict/delete eligible pods → return pod list
   - label_node  : arbitrary set / remove of node labels
   - annotate_node: arbitrary set / remove of node annotations
@@ -15,8 +15,6 @@ Operations:
 Design decisions
 ──────────────────
 - DaemonSet pods are ALWAYS skipped during drain — not user-configurable.
-- Cordon label names come from injected strings (sourced from Settings),
-  keeping the service testable without env-var coupling.
 - ``dry_run`` is resolved at the API layer before the service is called.
 - Drain returns ``DrainActionData`` (superset of NodeActionData) including
   the list of pods that were evicted or deleted.
@@ -54,20 +52,7 @@ _MIRROR_POD_ANNOTATION = "kubernetes.io/config.mirror"
 
 
 class NodeService:
-    """Implements cordon / uncordon / drain / list / label / annotate operations.
-
-    Args:
-        cordon_label_reason: Value for ``cordon_reason`` label (from Settings).
-        cordon_label_by:     Value for ``cordon_by``     label (from Settings).
-    """
-
-    def __init__(
-        self,
-        cordon_label_reason: str = "PM",
-        cordon_label_by: str = "infra",
-    ) -> None:
-        self._cordon_reason = cordon_label_reason
-        self._cordon_by = cordon_label_by
+    """Implements cordon / uncordon / drain / list / label / annotate operations."""
 
     # ── Node listing ──────────────────────────────────────────────────────────
 
@@ -183,45 +168,26 @@ class NodeService:
     # ── Cordon ────────────────────────────────────────────────────────────────
 
     def cordon(self, cluster: str, node_name: str, kube: CoreV1Api) -> NodeActionData:
-        """Mark *node_name* as unschedulable and stamp cordon labels.
-
-        Labels applied (names are configurable via Settings):
-          - ``cordon_reason=<CORDON_LABEL_REASON>``
-          - ``cordon_by=<CORDON_LABEL_BY>``
+        """Mark *node_name* as unschedulable.
 
         Raises:
             NodeNotFoundException: If the node does not exist.
             KubeApiException: On Kubernetes API failure.
         """
         self._patch_unschedulable(cluster, node_name, kube, unschedulable=True)
-        self._patch_labels(
-            cluster,
-            node_name,
-            kube,
-            set_labels={
-                "cordon_reason": self._cordon_reason,
-                "cordon_by": self._cordon_by,
-            },
-        )
         _logger.info("Cordoned node | cluster=%s | node=%s", cluster, node_name)
         return NodeActionData(cluster=cluster, node=node_name, action="cordon")
 
     # ── Uncordon ──────────────────────────────────────────────────────────────
 
     def uncordon(self, cluster: str, node_name: str, kube: CoreV1Api) -> NodeActionData:
-        """Re-enable scheduling and remove the cordon labels.
+        """Re-enable scheduling.
 
         Raises:
             NodeNotFoundException: If the node does not exist.
             KubeApiException: On Kubernetes API failure.
         """
         self._patch_unschedulable(cluster, node_name, kube, unschedulable=False)
-        self._patch_labels(
-            cluster,
-            node_name,
-            kube,
-            remove_labels=["cordon_reason", "cordon_by"],
-        )
         _logger.info("Uncordoned node | cluster=%s | node=%s", cluster, node_name)
         return NodeActionData(cluster=cluster, node=node_name, action="uncordon")
 
@@ -241,7 +207,7 @@ class NodeService:
         Completed/failed pods are ALWAYS skipped.
 
         Steps:
-          1. Cordon the node (unschedulable=True, labels stamped).
+          1. Cordon the node (unschedulable=True).
           2. List all pods assigned to the node.
           3. Filter out ineligible pods.
           4. Evict (honour PDB) or delete (bypass PDB) each eligible pod.
@@ -254,7 +220,7 @@ class NodeService:
             NodeNotFoundException: Node does not exist.
             KubeApiException: On Kubernetes API failure.
         """
-        # Step 1 — cordon first (stamps labels too).
+        # Step 1 — cordon first.
         self.cordon(cluster, node_name, kube)
         _logger.info(
             "Draining node | cluster=%s | node=%s | options=%s",

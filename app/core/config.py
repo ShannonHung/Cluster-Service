@@ -38,11 +38,6 @@ class Settings(BaseSettings):
     # Override at runtime: KUBECONFIG_BASE_PATH=/etc/kubeconfigs
     KUBECONFIG_BASE_PATH: str = "data/kubeconfigs"
 
-    # Labels stamped on a node when cordoned, and removed when uncordoned.
-    # Change these in .env without touching source code.
-    CORDON_LABEL_REASON: str = "PM"
-    CORDON_LABEL_BY: str = "infra"
-
     # ── Deploy Service ────────────────────────────────────────────────────────
     DEPLOY_SERVICE_URL: str = "http://localhost:8001"
     DEPLOY_SERVICE_USERNAME: str = "cluster-service"

@@ -31,8 +31,6 @@ coverage.xml
 .env.local
 .env.secrets
 
-# uv
-uv.lock
 
 # personal data
 data/kubeconfigs/k3d-mycluster.yaml
