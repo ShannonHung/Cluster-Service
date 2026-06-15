@@ -53,11 +53,7 @@ def _get_cluster_repo() -> ClusterRepository:
 
 
 def _get_node_service() -> NodeService:
-    settings = get_settings()
-    return NodeService(
-        cordon_label_reason=settings.CORDON_LABEL_REASON,
-        cordon_label_by=settings.CORDON_LABEL_BY,
-    )
+    return NodeService()
 
 
 def _request_id(request: Request) -> str:
@@ -96,10 +92,7 @@ async def get_node(
     "/{cluster}/nodes/{node}/cordon",
     response_model=ApiResponse[NodeActionData],
     summary="Cordon a node",
-    description=(
-        "Marks the node as unschedulable so no new pods are placed on it. "
-        "Stamps ``cordon_reason`` and ``cordon_by`` labels configured in Settings."
-    ),
+    description="Marks the node as unschedulable so no new pods are placed on it.",
 )
 async def cordon_node(
     request: Request,
@@ -120,7 +113,7 @@ async def cordon_node(
     "/{cluster}/nodes/{node}/uncordon",
     response_model=ApiResponse[NodeActionData],
     summary="Uncordon a node",
-    description="Re-enables scheduling and removes the cordon labels.",
+    description="Re-enables scheduling on the node.",
 )
 async def uncordon_node(
     request: Request,
