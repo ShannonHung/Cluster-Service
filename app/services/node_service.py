@@ -27,6 +27,7 @@ import time
 
 from kubernetes.client import CoreV1Api, V1Node
 from kubernetes.client.exceptions import ApiException
+from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 from app.core.exceptions import KubeApiException, NodeNotFoundException
 from app.domain.kubernetes_models import (
@@ -51,6 +52,14 @@ _logger = logging.getLogger(__name__)
 _MIRROR_POD_ANNOTATION = "kubernetes.io/config.mirror"
 
 
+def _connection_error(cluster: str, exc: Urllib3HTTPError) -> KubeApiException:
+    """Convert a urllib3 network error to a KubeApiException(503)."""
+    return KubeApiException(
+        f"Cannot reach cluster '{cluster}': {exc}",
+        kube_status=503,
+    )
+
+
 class NodeService:
     """Implements cordon / uncordon / drain / list / label / annotate operations."""
 
@@ -69,6 +78,8 @@ class NodeService:
                 f"Failed to list nodes in cluster '{cluster}': {exc.reason}",
                 kube_status=exc.status,
             ) from exc
+        except Urllib3HTTPError as exc:
+            raise _connection_error(cluster, exc) from exc
 
         nodes = [self._node_to_info(n) for n in node_list.items]
         _logger.info("Listed %d node(s) | cluster=%s", len(nodes), cluster)
@@ -107,6 +118,8 @@ class NodeService:
                 f"of cluster '{cluster}': {exc.reason}",
                 kube_status=exc.status,
             ) from exc
+        except Urllib3HTTPError as exc:
+            raise _connection_error(cluster, exc) from exc
 
         node_set = set(nodes) if nodes else None
         status_set = {s.lower() for s in statuses} if statuses else None
@@ -151,6 +164,8 @@ class NodeService:
                 f"Failed to read node '{node_name}': {exc.reason}",
                 kube_status=exc.status,
             ) from exc
+        except Urllib3HTTPError as exc:
+            raise _connection_error(cluster, exc) from exc
 
         info = self._node_to_info(node)
         _logger.info("Got node detail | cluster=%s | node=%s", cluster, node_name)
@@ -237,6 +252,8 @@ class NodeService:
                 f"Failed to list pods on node '{node_name}': {exc.reason}",
                 kube_status=exc.status,
             ) from exc
+        except Urllib3HTTPError as exc:
+            raise _connection_error(cluster, exc) from exc
 
         # Step 3 — filter ineligible pods.
         pods_to_evict = []
@@ -416,6 +433,8 @@ class NodeService:
                     f"Failed to patch taints on node '{node_name}': {exc.reason}",
                     kube_status=exc.status,
                 ) from exc
+            except Urllib3HTTPError as exc:
+                raise _connection_error(cluster, exc) from exc
             current = self._read_node(cluster, node_name, kube)
             _logger.info("Patched taints | cluster=%s | node=%s", cluster, node_name)
 
@@ -444,6 +463,8 @@ class NodeService:
                 f"Failed to patch node '{node_name}': {exc.reason}",
                 kube_status=exc.status,
             ) from exc
+        except Urllib3HTTPError as exc:
+            raise _connection_error(cluster, exc) from exc
 
     def _patch_labels(
         self,
@@ -476,6 +497,8 @@ class NodeService:
                 f"Failed to patch labels on node '{node_name}': {exc.reason}",
                 kube_status=exc.status,
             ) from exc
+        except Urllib3HTTPError as exc:
+            raise _connection_error(cluster, exc) from exc
         return True
 
     def _patch_annotations(
@@ -509,6 +532,8 @@ class NodeService:
                 f"Failed to patch annotations on node '{node_name}': {exc.reason}",
                 kube_status=exc.status,
             ) from exc
+        except Urllib3HTTPError as exc:
+            raise _connection_error(cluster, exc) from exc
         return True
 
     def _fetch_node_metadata(
@@ -529,6 +554,8 @@ class NodeService:
                 f"Failed to read node '{node_name}' after patch: {exc.reason}",
                 kube_status=exc.status,
             ) from exc
+        except Urllib3HTTPError as exc:
+            raise _connection_error(cluster, exc) from exc
         return (node.metadata.labels or {}, node.metadata.annotations or {})
 
     def _read_node(self, cluster: str, node_name: str, kube: CoreV1Api):
@@ -544,6 +571,8 @@ class NodeService:
                 f"Failed to read node '{node_name}': {exc.reason}",
                 kube_status=exc.status,
             ) from exc
+        except Urllib3HTTPError as exc:
+            raise _connection_error(cluster, exc) from exc
 
     @staticmethod
     def _to_taint_spec(taint) -> TaintSpec:
@@ -573,6 +602,10 @@ class NodeService:
                     f"Failed to delete pod '{namespace}/{name}': {exc.reason}",
                     kube_status=exc.status,
                 ) from exc
+            except Urllib3HTTPError as exc:
+                raise KubeApiException(
+                    f"Cannot reach cluster: {exc}", kube_status=503,
+                ) from exc
         else:
             from kubernetes.client.models import V1DeleteOptions, V1Eviction, V1ObjectMeta
             _logger.debug("Evicting pod | ns=%s | pod=%s", namespace, name)
@@ -595,6 +628,10 @@ class NodeService:
                     f"Failed to evict pod '{namespace}/{name}': {exc.reason}",
                     kube_status=exc.status,
                 ) from exc
+            except Urllib3HTTPError as exc:
+                raise KubeApiException(
+                    f"Cannot reach cluster: {exc}", kube_status=503,
+                ) from exc
 
     def _wait_for_pods_gone(
         self,
@@ -615,6 +652,10 @@ class NodeService:
                 raise KubeApiException(
                     f"Error while waiting for pods to drain: {exc.reason}",
                     kube_status=exc.status,
+                ) from exc
+            except Urllib3HTTPError as exc:
+                raise KubeApiException(
+                    f"Cannot reach cluster: {exc}", kube_status=503,
                 ) from exc
 
             still_present = {
