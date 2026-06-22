@@ -35,10 +35,11 @@ from app.domain.kubernetes_models import (
     DrainOptions,
     DrainedPodInfo,
     NodeActionData,
+    NodeAnnotationsData,
     NodeDetailData,
     NodeInfo,
+    NodeLabelsData,
     NodeListData,
-    NodeMetadataData,
     NodeTaintData,
     PodInfo,
     PodListData,
@@ -168,6 +169,7 @@ class NodeService:
             raise _connection_error(cluster, exc) from exc
 
         info = self._node_to_info(node)
+        taints = [self._to_taint_spec(t) for t in (node.spec.taints or [])]
         _logger.info("Got node detail | cluster=%s | node=%s", cluster, node_name)
         return NodeDetailData(
             cluster=cluster,
@@ -178,6 +180,7 @@ class NodeService:
             unschedulable=info.unschedulable,
             labels=info.labels,
             annotations=info.annotations,
+            taints=taints,
         )
 
     # ── Cordon ────────────────────────────────────────────────────────────────
@@ -323,10 +326,10 @@ class NodeService:
         kube: CoreV1Api,
         set_labels: dict[str, str] | None = None,
         remove_labels: list[str] | None = None,
-    ) -> NodeMetadataData:
+    ) -> NodeLabelsData:
         """Add / overwrite or remove labels on *node_name*.
 
-        Returns the current labels and annotations after the patch.
+        Returns the node's current labels after the patch.
 
         Raises:
             NodeNotFoundException: Node does not exist.
@@ -336,18 +339,9 @@ class NodeService:
             cluster, node_name, kube,
             set_labels=set_labels, remove_labels=remove_labels,
         )
-        current_labels, current_annotations = (
-            self._fetch_node_metadata(cluster, node_name, kube) if patched
-            else ({}, {})
-        )
+        current_labels = self._fetch_node_labels(cluster, node_name, kube) if patched else {}
         _logger.info("Patched labels | cluster=%s | node=%s", cluster, node_name)
-        return NodeMetadataData(
-            cluster=cluster,
-            node=node_name,
-            action="label",
-            labels=current_labels,
-            annotations=current_annotations,
-        )
+        return NodeLabelsData(cluster=cluster, node=node_name, labels=current_labels)
 
     # ── Annotation management ─────────────────────────────────────────────────
 
@@ -358,10 +352,10 @@ class NodeService:
         kube: CoreV1Api,
         set_annotations: dict[str, str] | None = None,
         remove_annotations: list[str] | None = None,
-    ) -> NodeMetadataData:
+    ) -> NodeAnnotationsData:
         """Add / overwrite or remove annotations on *node_name*.
 
-        Returns the current labels and annotations after the patch.
+        Returns the node's current annotations after the patch.
 
         Raises:
             NodeNotFoundException: Node does not exist.
@@ -371,18 +365,9 @@ class NodeService:
             cluster, node_name, kube,
             set_annotations=set_annotations, remove_annotations=remove_annotations,
         )
-        current_labels, current_annotations = (
-            self._fetch_node_metadata(cluster, node_name, kube) if patched
-            else ({}, {})
-        )
+        current_annotations = self._fetch_node_annotations(cluster, node_name, kube) if patched else {}
         _logger.info("Patched annotations | cluster=%s | node=%s", cluster, node_name)
-        return NodeMetadataData(
-            cluster=cluster,
-            node=node_name,
-            action="annotate",
-            labels=current_labels,
-            annotations=current_annotations,
-        )
+        return NodeAnnotationsData(cluster=cluster, node=node_name, annotations=current_annotations)
 
     # ── Taint management ──────────────────────────────────────────────────────
 
@@ -536,27 +521,15 @@ class NodeService:
             raise _connection_error(cluster, exc) from exc
         return True
 
-    def _fetch_node_metadata(
-        self,
-        cluster: str,
-        node_name: str,
-        kube: CoreV1Api,
-    ) -> tuple[dict[str, str], dict[str, str]]:
-        """Read the current labels and annotations from the cluster after a patch."""
-        try:
-            node = kube.read_node(node_name)
-        except ApiException as exc:
-            if exc.status == 404:
-                raise NodeNotFoundException(
-                    f"Node '{node_name}' not found in cluster '{cluster}'.",
-                ) from exc
-            raise KubeApiException(
-                f"Failed to read node '{node_name}' after patch: {exc.reason}",
-                kube_status=exc.status,
-            ) from exc
-        except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
-        return (node.metadata.labels or {}, node.metadata.annotations or {})
+    def _fetch_node_labels(self, cluster: str, node_name: str, kube: CoreV1Api) -> dict[str, str]:
+        """Read current labels from the cluster after a patch."""
+        node = self._read_node(cluster, node_name, kube)
+        return node.metadata.labels or {}
+
+    def _fetch_node_annotations(self, cluster: str, node_name: str, kube: CoreV1Api) -> dict[str, str]:
+        """Read current annotations from the cluster after a patch."""
+        node = self._read_node(cluster, node_name, kube)
+        return node.metadata.annotations or {}
 
     def _read_node(self, cluster: str, node_name: str, kube: CoreV1Api):
         """Read a node, mapping 404 → NodeNotFoundException."""

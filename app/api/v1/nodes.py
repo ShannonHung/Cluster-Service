@@ -28,8 +28,9 @@ from app.domain.kubernetes_models import (
     DrainActionData,
     DrainRequest,
     NodeActionData,
+    NodeAnnotationsData,
     NodeDetailData,
-    NodeMetadataData,
+    NodeLabelsData,
     NodePatchRequest,
     NodeTaintData,
     NodeTaintRequest,
@@ -173,11 +174,11 @@ async def drain_node(
 
 @router.patch(
     "/{cluster}/nodes/{node}/labels",
-    response_model=ApiResponse[NodeMetadataData],
+    response_model=ApiResponse[NodeLabelsData],
     summary="Set or remove node labels",
     description=(
         "Set ``set`` to add/overwrite labels, ``remove`` to delete keys. "
-        "Response contains the node's **current** labels and annotations after the patch."
+        "Response contains the node's **current** labels after the patch."
     ),
 )
 async def patch_node_labels(
@@ -205,11 +206,11 @@ async def patch_node_labels(
 
 @router.patch(
     "/{cluster}/nodes/{node}/annotations",
-    response_model=ApiResponse[NodeMetadataData],
+    response_model=ApiResponse[NodeAnnotationsData],
     summary="Set or remove node annotations",
     description=(
         "Set ``set`` to add/overwrite annotations, ``remove`` to delete keys. "
-        "Response contains the node's **current** labels and annotations after the patch."
+        "Response contains the node's **current** annotations after the patch."
     ),
 )
 async def patch_node_annotations(
