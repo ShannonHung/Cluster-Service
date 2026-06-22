@@ -291,7 +291,7 @@ def test_label_node_calls_patch_with_labels():
     kube.patch_node.assert_called_once_with("n", {"metadata": {"labels": {"env": "prod"}}})
     assert result.action == "label"
     assert result.labels == {"env": "prod"}
-    assert result.annotations == {"note": "hi"}
+    assert not hasattr(result, "annotations")
 
 
 def test_label_node_removes_labels_with_null():
@@ -334,7 +334,7 @@ def test_annotate_node_calls_patch_with_annotations():
         "n", {"metadata": {"annotations": {"note": "hello"}}}
     )
     assert result.action == "annotate"
-    assert result.labels == {"env": "prod"}
+    assert not hasattr(result, "labels")
     assert result.annotations == {"note": "hello"}
 
 

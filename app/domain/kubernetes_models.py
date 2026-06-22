@@ -145,18 +145,23 @@ class DrainActionData(BaseModel):
     )
 
 
-class NodeMetadataData(BaseModel):
-    """Shared response for PATCH /labels and PATCH /annotations.
-
-    Returns the *current* labels and annotations on the node after the
-    patch has been applied, so the caller can confirm the final state.
-    """
+class NodeLabelsData(BaseModel):
+    """Response for PATCH /labels — the node's current labels after the patch."""
 
     status: str = "success"
     cluster: str
     node: str
-    action: str  # "label" | "annotate"
+    action: str = "label"
     labels: dict[str, str] = Field(default_factory=dict)
+
+
+class NodeAnnotationsData(BaseModel):
+    """Response for PATCH /annotations — the node's current annotations after the patch."""
+
+    status: str = "success"
+    cluster: str
+    node: str
+    action: str = "annotate"
     annotations: dict[str, str] = Field(default_factory=dict)
 
 
@@ -242,7 +247,6 @@ class NodeDetailData(BaseModel):
     """Full node detail (node attributes only; pods are queried separately).
 
     Used by GET …/{cluster}/nodes/{node}.
-    Shares the same leaf fields as NodeInfo, adding annotations.
     """
 
     cluster: str
@@ -253,6 +257,7 @@ class NodeDetailData(BaseModel):
     unschedulable: bool = False
     labels: dict[str, str] = Field(default_factory=dict)
     annotations: dict[str, str] = Field(default_factory=dict)
+    taints: list[TaintSpec] = Field(default_factory=list)
 
 
 class ClusterInfo(BaseModel):
