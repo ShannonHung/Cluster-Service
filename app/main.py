@@ -16,7 +16,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.security import OAuth2PasswordRequestForm
@@ -26,6 +26,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.api.router import api_router
 from app.core.config import get_settings
+from app.core.dependencies import set_access_cookie
 from app.core.exceptions import (
     BaseAppException,
     app_exception_handler,
@@ -137,11 +138,13 @@ def create_app() -> FastAPI:
         summary="Login — obtain a JWT access token",
     )
     async def token_endpoint(
+        response: Response,
         form_data: OAuth2PasswordRequestForm = Depends(),
     ) -> OAuth2TokenResponse:
         svc = AuthService(JsonUserRepository(settings.USERS_JSON_PATH))
         user = await svc.authenticate(form_data.username, form_data.password)
         token_data = await svc.generate_token(user)
+        set_access_cookie(response, token_data.access_token, token_data.expires_in)
         return OAuth2TokenResponse(
             access_token=token_data.access_token,
             token_type=token_data.token_type,
