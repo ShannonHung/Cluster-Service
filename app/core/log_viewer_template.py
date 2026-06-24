@@ -415,11 +415,11 @@ LOG_VIEWER_HTML = """
                 const sep = `{trace_url}`.includes('?') ? '&' : '?';
                 const res = await fetch(`{trace_url}${{sep}}byte_offset=${{currentByteOffset}}&line_num=${{currentLineNum}}&t=${{Date.now()}}`, {{ cache: 'no-store' }});
                 // Not logged in (no auth cookie/header): send the browser to the
-                // login page and come straight back to this viewer afterwards.
+                // API docs (Swagger UI) where the user can obtain a bearer token.
                 if (res.status === 401 || res.status === 403) {{
                     if (timer) clearTimeout(timer);
                     timer = null;
-                    window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname + window.location.search);
+                    window.location.href = '/docs';
                     return;
                 }}
                 if (!res.ok) throw new Error(`HTTP ${{res.status}}`);

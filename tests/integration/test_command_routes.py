@@ -108,13 +108,21 @@ def test_get_command_info(client, fake_service):
 
 
 def test_view_escapes_malicious_id(client):
+    # %3Cscript%3E contains < and > which fail the strict _COMMAND_ID_RE validator.
+    # The router now rejects these at the boundary (404) before reaching the template,
+    # so neither the raw nor the escaped form should appear in any HTML output.
     r = client.get("/api/v1/command/execution/%3Cscript%3E/view")
-    assert r.status_code == 200
-    # The escaped form must appear in HTML attributes (title, heading, meta).
-    assert "&lt;script&gt;" in r.text
-    # The raw tag must NOT appear in the title element (the primary XSS vector).
+    assert r.status_code == 404
+    # The raw tag must never appear in any response (not in HTML or error body).
+    assert "<script>" not in r.text
     assert "<title>Command Log Viewer | <script>" not in r.text
-    # The raw tag must NOT appear in the h1 heading.
     assert "<h1>Command: <script>" not in r.text
-    # The raw tag must NOT appear in the meta_html code element.
     assert "<code><script>" not in r.text
+
+
+def test_view_rejects_js_context_breakout_id(client):
+    # A command_id containing a backtick, semicolon, and slashes — URL-encoded.
+    # If it reached the JS template-literal contexts it could execute same-origin.
+    # The router-level validator must reject it with 404 before any rendering.
+    r = client.get("/api/v1/command/execution/x%60%3Balert(1)%2F%2F/view")
+    assert r.status_code == 404

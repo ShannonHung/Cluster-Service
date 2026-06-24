@@ -8,7 +8,13 @@ log-viewer shell (whose polled /trace/ui carries its own token).
 from __future__ import annotations
 
 import html
+import re
 from typing import Annotated
+
+# Strict allowlist for command_id values accepted by the unauthed /view endpoint.
+# uuid4 ids (hex chars + hyphens) always satisfy this pattern; injection payloads
+# containing backticks, ${ }, slashes, angle brackets, etc. do not.
+_COMMAND_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
@@ -139,6 +145,11 @@ async def get_command_trace_ui(
 )
 async def view_command(command_id: str):
     # Unauthed HTML shell; the /trace/ui it polls carries its own command_api token.
+    # Validate command_id before any HTML/JS rendering — reject ids whose charset
+    # could break out of JS template-literal contexts (backticks, ${}, slashes, etc.).
+    if not _COMMAND_ID_RE.fullmatch(command_id):
+        from app.core.exceptions import NotFoundException
+        raise NotFoundException("Command not found.")
     safe_id = html.escape(command_id)
     trace_url = f"/api/v1/command/execution/{command_id}/trace/ui"
     meta_html = f'<div><span class="label">Command ID</span><code>{safe_id}</code></div>'

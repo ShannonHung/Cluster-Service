@@ -53,7 +53,7 @@ class CommandWhitelistConfig(BaseModel):
 
 
 class UserCommandWhitelist(BaseModel):
-    name: str = "admin"
+    name: str = "cluster_proxy"
     allow_hosts: List[str] = [".*"]
     deny_hosts: List[str] = []
     allow_commands: List[CommandWhitelistConfig]
