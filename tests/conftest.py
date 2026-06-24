@@ -14,11 +14,10 @@ import pytest
 os.environ.setdefault("APP_ENV", "test")
 
 from fastapi.testclient import TestClient
-from app.main import create_app
+from app.main import app
 
 
 @pytest.fixture(scope="session")
 def client() -> TestClient:
     """TestClient backed by the full app with test settings."""
-    app = create_app()
     return TestClient(app)
