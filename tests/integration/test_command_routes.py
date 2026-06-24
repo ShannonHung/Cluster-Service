@@ -9,6 +9,8 @@ from app.main import app
 from app.api.v1.command import _get_command_service
 from app.domain.command_models import (
     CommandExecutionResponse,
+    CommandWhitelistConfig,
+    PipelineStep,
     UserCommandWhitelist,
 )
 
@@ -30,6 +32,11 @@ def fake_service():
     )
     svc.get_result = AsyncMock(
         return_value=CommandExecutionResponse(command_id="abc", status="success")
+    )
+    svc.get_command = AsyncMock(
+        return_value=CommandWhitelistConfig(
+            command_name="run_ansible", pipeline=[]
+        )
     )
     svc.kill = AsyncMock(
         return_value=CommandExecutionResponse(command_id="abc", status="accepted")
@@ -77,3 +84,37 @@ def test_kill_proxies(client, fake_service):
     )
     assert r.status_code == 200, r.text
     fake_service.kill.assert_awaited_once()
+
+
+def test_get_execution_status(client, fake_service):
+    token = _login(client)
+    r = client.get(
+        "/api/v1/command/execution/abc",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["command_id"] == "abc"
+    assert r.json()["data"]["status"] == "success"
+
+
+def test_get_command_info(client, fake_service):
+    token = _login(client)
+    r = client.get(
+        "/api/v1/command/run_ansible/info",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["command_name"] == "run_ansible"
+
+
+def test_view_escapes_malicious_id(client):
+    r = client.get("/api/v1/command/execution/%3Cscript%3E/view")
+    assert r.status_code == 200
+    # The escaped form must appear in HTML attributes (title, heading, meta).
+    assert "&lt;script&gt;" in r.text
+    # The raw tag must NOT appear in the title element (the primary XSS vector).
+    assert "<title>Command Log Viewer | <script>" not in r.text
+    # The raw tag must NOT appear in the h1 heading.
+    assert "<h1>Command: <script>" not in r.text
+    # The raw tag must NOT appear in the meta_html code element.
+    assert "<code><script>" not in r.text

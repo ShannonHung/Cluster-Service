@@ -7,7 +7,7 @@ log-viewer shell (whose polled /trace/ui carries its own token).
 """
 from __future__ import annotations
 
-import logging
+import html
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -31,8 +31,6 @@ from app.domain.command_models import (
 )
 from app.domain.models import ApiResponse, User
 from app.services.command_service import CommandService
-
-_logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/command", tags=["command"])
 
@@ -141,11 +139,12 @@ async def get_command_trace_ui(
 )
 async def view_command(command_id: str):
     # Unauthed HTML shell; the /trace/ui it polls carries its own command_api token.
+    safe_id = html.escape(command_id)
     trace_url = f"/api/v1/command/execution/{command_id}/trace/ui"
-    meta_html = f'<div><span class="label">Command ID</span><code>{command_id}</code></div>'
+    meta_html = f'<div><span class="label">Command ID</span><code>{safe_id}</code></div>'
     return LOG_VIEWER_HTML.format(
-        title=f"Command Log Viewer | {command_id}",
-        heading=f"Command: {command_id}",
+        title=f"Command Log Viewer | {safe_id}",
+        heading=f"Command: {safe_id}",
         trace_url=trace_url,
         terminal_statuses_json="['success','failed','killed']",
         meta_html=meta_html,
