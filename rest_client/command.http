@@ -1,0 +1,33 @@
+@baseUrl = http://localhost:8000
+# Use the login endpoint in auth.http to get a token and paste it here
+@token = YOUR_TOKEN_HERE
+
+### List available commands (ansible only)
+GET {{baseUrl}}/api/v1/command/info
+Authorization: Bearer {{token}}
+
+### Run ansible
+POST {{baseUrl}}/api/v1/command/execution
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "command_name": "run_ansible",
+  "host": "127.0.0.1",
+  "port": 22,
+  "username": "root",
+  "ssh_config": "control_node",
+  "arguments": { "playbook": "ping.yml", "inventory": "taipei/multinode.ini" }
+}
+
+### Poll result
+@command_id = REPLACE_ID
+GET {{baseUrl}}/api/v1/command/execution/{{command_id}}
+Authorization: Bearer {{token}}
+
+### View live logs (open in browser)
+GET {{baseUrl}}/api/v1/command/execution/{{command_id}}/view
+
+### Kill
+POST {{baseUrl}}/api/v1/command/execution/{{command_id}}/kill
+Authorization: Bearer {{token}}

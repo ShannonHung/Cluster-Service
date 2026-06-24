@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Role
 
-`cluster-service` is one of two FastAPI sub-projects under `antigravity-fastapi/` (the other is `deploy-service/`). This service has two responsibilities:
+`cluster-service` is one of two FastAPI sub-projects under `antigravity-fastapi/` (the other is `deploy-service/`). This service has three responsibilities:
 
 1. **Kubernetes cluster operations** — list clusters, list/get nodes, cordon, uncordon, drain, label, annotate. Talks directly to multiple Kubernetes clusters via the `kubernetes` SDK.
 2. **Deploy-service proxy** — trigger / cancel / retry / status GitLab pipelines by forwarding to `deploy-service` over HTTP with managed bearer-token auth.
+3. **Command-execution proxy** — list available commands, run them, poll results, view live logs, and kill running commands by forwarding to `deploy-service`'s SSH command API over HTTP. The upstream identity (`cluster_proxy`) is restricted by deploy-service's per-user whitelist to **ansible commands only**.
 
 The parent repo's `../CLAUDE.md` describes `deploy-service`; this file is for `cluster-service` only. Run all commands from `cluster-service/`.
 
@@ -61,9 +62,10 @@ router → ClusterRepository.get_kube_client_config(cluster)
 
 **Config / environments** (`app/core/config.py`): `APP_ENV` selects the env file. Settings loads `.env` then `.env.{APP_ENV}` (override order). `get_settings()` is `lru_cache`'d — reset it in tests with `get_settings.cache_clear()`. `KUBECONFIG_BASE_PATH`, `CORDON_LABEL_REASON`, `CORDON_LABEL_BY`, and the `DEPLOY_SERVICE_*` values are all sourced from here, never hardcoded.
 
-**Auth** (`app/core/security.py`, `app/core/dependencies.py`): JWT (HS256) + bcrypt. Use `Depends(get_current_user(["scope_name"]))` on any route. Two scopes are in use:
+**Auth** (`app/core/security.py`, `app/core/dependencies.py`): JWT (HS256) + bcrypt. Use `Depends(get_current_user(["scope_name"]))` on any route. Three scopes are in use:
 - `cluster_api` — gates all `/api/v1/clusters/...` and `/api/v1/clusters/{cluster}/nodes/...` endpoints.
 - `deploy_api` — gates all `/api/v1/deploy/...` endpoints.
+- `command_api` — gates all `/api/v1/command/...` endpoints.
 
 The `/token` OAuth2 endpoint is registered directly on the root app (not on a versioned router) so Swagger UI can auto-fill Authorization headers.
 
@@ -82,6 +84,8 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 - `DeployServiceTokenManager` (subclass of abstract `TokenManager`) fetches and caches a bearer token from deploy-service's `/token` endpoint. Refresh is `asyncio.Lock`-guarded and triggers automatically 30s before expiry. There is a **module-level singleton** in `app/api/v1/deploy.py` (`_deploy_token_manager`) — do not instantiate a second one per request.
 - `DeployServiceClient._request_with_retry` retries once on 401 after forcing a token refresh, then maps any non-2xx to `DeployServiceError`.
 - `PipelineService` is a thin orchestration layer so the router stays HTTP-only and the client is easy to mock in tests.
+
+**Command-service client** (`app/clients/command_service_client.py` + `app/services/command_service.py`): same pattern as the pipeline proxy — reuses the shared `DeployServiceTokenManager` singleton (upstream identity `cluster_proxy`). The HTML log viewer (`/execution/{id}/view`) is served locally and polls cluster-service's own `/trace/ui`, so browsers never reach deploy-service. `/view` is unauthed; `/trace/ui` uses cookie-or-header auth.
 
 **Exception hierarchy** (`app/core/exceptions.py`): All app exceptions extend `BaseAppException` (carries `http_status`, `error_code`, `log_level`, auto-detected `source_function`). The global handler in `main.py` returns `{"error": {"code": "...", "message": "..."}, "request_id": "..."}`. Notable specialisations:
 - `KubeApiException` mirrors the upstream Kubernetes status into `http_status` (falls back to 502). All `kubernetes.client.ApiException`s are caught **inside services** and re-raised as this — the router layer never sees the K8s SDK.
