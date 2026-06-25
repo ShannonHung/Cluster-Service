@@ -26,6 +26,7 @@ class HostType(str, Enum):
     IP = "ip"
     BASTION = "bastion"
     HOSTNAME = "hostname"
+    CLUSTER = "cluster"
 
 
 # ── Whitelist configuration ──────────────────────────────────────────────────
