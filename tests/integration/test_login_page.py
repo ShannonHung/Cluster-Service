@@ -46,6 +46,51 @@ def test_get_login_open_redirect_sanitized(client: TestClient):
     # The literal value must NOT appear as the hidden field value
     assert 'value="//evil.com"' not in resp.text
     assert "value='//evil.com'" not in resp.text
+    # The safe fallback must be present
+    assert 'value="/docs"' in resp.text
+
+
+def test_get_login_percent_encoded_slash_redirect_sanitized(client: TestClient):
+    """GET /login?next=/%2fevil.com must fall back to /docs (percent-decode bypass).
+
+    A raw /%2f in a query string is decoded by Starlette's query-param layer so
+    safe_next_path receives '//evil.com' which is already caught. This test
+    confirms the /docs fallback is rendered and no evil.com value leaks out.
+    """
+    resp = client.get("/login?next=/%2fevil.com")
+    assert resp.status_code == 200
+    # The safe fallback must be present as the hidden input value
+    assert 'value="/docs"' in resp.text
+    # evil.com must not appear anywhere in the hidden input value
+    assert 'value="/%2fevil.com"' not in resp.text
+    assert "value='/%2fevil.com'" not in resp.text
+    assert "evil.com" not in resp.text
+
+
+def test_post_login_percent_encoded_slash_redirect_sanitized():
+    """POST /login with next=/%2fevil.com in form body must NOT redirect to that path.
+
+    Unlike GET, multipart form parsing does NOT decode %2f, so safe_next_path
+    receives the raw string '/%2fevil.com'. Without the unquote() fix this passes
+    the '//' guard and returns '/%2fevil.com' as Location — a browser then
+    normalises /%2f to // → off-site redirect. After the fix, it must fall back to /docs.
+    """
+    resp = _no_follow_client.post(
+        "/login",
+        data={
+            "username": "test_admin",
+            "password": "secret",
+            "next": "/%2fevil.com",
+        },
+    )
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    # Must NOT redirect to the percent-encoded bypass path
+    assert location != "/%2fevil.com", (
+        "safe_next_path allowed /%2fevil.com as redirect target — open redirect via %2f bypass"
+    )
+    # Must fall back to the safe /docs path
+    assert location == "/docs", f"Expected /docs fallback but got {location!r}"
 
 
 # ── POST /login ────────────────────────────────────────────────────────────────

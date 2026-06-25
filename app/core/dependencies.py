@@ -12,6 +12,7 @@ Usage in routes:
 from __future__ import annotations
 
 from typing import Callable, Optional
+from urllib.parse import unquote
 
 from fastapi import Depends, Request
 from fastapi.security import OAuth2PasswordBearer
@@ -46,14 +47,23 @@ def safe_next_path(next_path: str | None, fallback: str = "/docs") -> str:
     Only same-origin, absolute *paths* are allowed (must start with a single
     '/'). Anything that could redirect off-site ('//host', 'http://host',
     backslashes, missing leading slash) falls back to a safe local default.
+
+    The value is percent-decoded before the guard checks are applied so that
+    encoded bypass attempts like ``/%2fevil.com`` (which a browser normalises to
+    ``//evil.com``) are caught. Both one-level and double-encoded inputs are
+    checked: if either the once-decoded or twice-decoded form fails a guard,
+    the fallback is returned. The once-decoded value is returned on success.
     """
     if not next_path:
         return fallback
-    if not next_path.startswith("/"):
-        return fallback
-    if next_path.startswith("//") or next_path.startswith("/\\"):
-        return fallback
-    return next_path
+    decoded = unquote(next_path)
+    double = unquote(decoded)
+    for candidate in (decoded, double):
+        if not candidate.startswith("/"):
+            return fallback
+        if candidate.startswith("//") or candidate.startswith("/\\"):
+            return fallback
+    return decoded
 
 
 def get_current_user(required_scopes: list[str] | None = None) -> Callable:

@@ -166,7 +166,6 @@ def create_app() -> FastAPI:
 
     @app.post("/login", tags=["auth"], summary="Login form submit (browser)")
     async def login_submit(
-        response: Response,
         form_data: OAuth2PasswordRequestForm = Depends(),
         next: str = Form("/docs"),
     ):
