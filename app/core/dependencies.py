@@ -40,6 +40,22 @@ def set_access_cookie(response, token: str, max_age: int) -> None:
     )
 
 
+def safe_next_path(next_path: str | None, fallback: str = "/docs") -> str:
+    """Open-redirect guard for the login ``next`` param.
+
+    Only same-origin, absolute *paths* are allowed (must start with a single
+    '/'). Anything that could redirect off-site ('//host', 'http://host',
+    backslashes, missing leading slash) falls back to a safe local default.
+    """
+    if not next_path:
+        return fallback
+    if not next_path.startswith("/"):
+        return fallback
+    if next_path.startswith("//") or next_path.startswith("/\\"):
+        return fallback
+    return next_path
+
+
 def get_current_user(required_scopes: list[str] | None = None) -> Callable:
     """Dependency factory that validates JWT and enforces scope requirements.
 
