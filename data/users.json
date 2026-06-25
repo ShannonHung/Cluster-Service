@@ -5,7 +5,8 @@
         "scopes": [
             "cluster_api",
             "deploy_api",
-            "vm_api"
+            "vm_api",
+            "command_api"
         ]
     },
     {

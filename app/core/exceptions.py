@@ -49,6 +49,9 @@ class ErrorCode(StrEnum):
     PIPELINE_CANCEL_FAILED     = "PIPELINE_CANCEL_FAILED"
     PIPELINE_RETRY_FAILED      = "PIPELINE_RETRY_FAILED"
 
+    # ── Command (SSH command proxy) ───────────────────────────────────────────
+    COMMAND_EXECUTION_FAILED   = "COMMAND_EXECUTION_FAILED"
+
     # ── Deploy-service level ──────────────────────────────────────────────────
     DEPLOY_SERVICE_UNAVAILABLE = "DEPLOY_SERVICE_UNAVAILABLE"
     DEPLOY_SERVICE_AUTH_ERROR  = "DEPLOY_SERVICE_AUTH_ERROR"
@@ -157,6 +160,7 @@ _DEPLOY_CODE_MAP: dict[str, ErrorCode] = {
     "CONFLICT":   ErrorCode.PIPELINE_CONFLICT,
     "AUTH_ERROR": ErrorCode.DEPLOY_SERVICE_AUTH_ERROR,
     "FORBIDDEN":  ErrorCode.DEPLOY_SERVICE_FORBIDDEN,
+    "COMMAND_EXECUTION_ERROR": ErrorCode.COMMAND_EXECUTION_FAILED,
 }
 
 # Fallback: map HTTP status → ErrorCode when response body is absent or unrecognised.
