@@ -28,6 +28,7 @@ from fastapi import APIRouter
 
 from app.api.v1.auth import router as auth_router
 from app.api.v1.clusters import router as clusters_router
+from app.api.v1.command import router as command_router
 from app.api.v1.deploy import router as deploy_router
 from app.api.v1.nodes import router as nodes_router
 from app.api.v1.pods import router as pods_router
@@ -38,7 +39,8 @@ v1_router.include_router(auth_router)     # mounts at /api/v1/auth/...
 v1_router.include_router(deploy_router)   # mounts at /api/v1/deploy/...
 v1_router.include_router(clusters_router) # mounts at /api/v1/clusters/...
 v1_router.include_router(nodes_router)    # mounts at /api/v1/clusters/{cluster}/nodes/{node}/...
-v1_router.include_router(pods_router)    # mounts at /api/v1/clusters/{cluster}/pods
+v1_router.include_router(pods_router)     # mounts at /api/v1/clusters/{cluster}/pods
+v1_router.include_router(command_router)  # mounts at /api/v1/command/...
 
 # ── Root router (aggregates everything) ───────────────────────────────────────
 api_router = APIRouter()
