@@ -57,6 +57,9 @@ class ErrorCode(StrEnum):
     DEPLOY_SERVICE_AUTH_ERROR  = "DEPLOY_SERVICE_AUTH_ERROR"
     DEPLOY_SERVICE_FORBIDDEN   = "DEPLOY_SERVICE_FORBIDDEN"
 
+    # ── Inventory ─────────────────────────────────────────────────────────────
+    INVENTORY_NOT_FOUND        = "INVENTORY_NOT_FOUND"
+
     # ── Generic upstream ──────────────────────────────────────────────────────
     UPSTREAM_ERROR             = "UPSTREAM_ERROR"
 
