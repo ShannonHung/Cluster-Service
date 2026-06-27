@@ -20,6 +20,10 @@ Route layout:
   POST /api/v1/clusters/{cluster}/nodes/{node}/drain           → Drain a node
   GET  /api/v1/clusters/{cluster}/pods                         → List pods in a namespace (filtered)
   PATCH /api/v1/clusters/{cluster}/nodes/{node}/taints         → Set or remove node taints
+  GET  /api/v1/inventory/nodes/{node_name}                    → Cluster node lookup (proxy)
+  GET  /api/v1/inventory/mappings                             → Bastion-cluster mappings (proxy)
+  GET  /api/v1/inventory/nodes/{node_name}/bastion-resolution → Node-to-bastion resolution (proxy)
+  GET  /api/v1/inventory/cluster/bastion-resolution           → Cluster-to-bastion resolution (proxy)
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.clusters import router as clusters_router
 from app.api.v1.command import router as command_router
 from app.api.v1.deploy import router as deploy_router
+from app.api.v1.inventory import router as inventory_router
 from app.api.v1.nodes import router as nodes_router
 from app.api.v1.pods import router as pods_router
 
@@ -41,6 +46,7 @@ v1_router.include_router(clusters_router) # mounts at /api/v1/clusters/...
 v1_router.include_router(nodes_router)    # mounts at /api/v1/clusters/{cluster}/nodes/{node}/...
 v1_router.include_router(pods_router)     # mounts at /api/v1/clusters/{cluster}/pods
 v1_router.include_router(command_router)  # mounts at /api/v1/command/...
+v1_router.include_router(inventory_router)  # mounts at /api/v1/inventory/...
 
 # ── Root router (aggregates everything) ───────────────────────────────────────
 api_router = APIRouter()
