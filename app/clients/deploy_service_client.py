@@ -13,6 +13,12 @@ import httpx
 
 from app.core.exceptions import DeployServiceError, UpstreamServiceException
 from app.core.token_manager import TokenManager
+from app.domain.inventory_models import (
+    BastionMapping,
+    ClusterBastionResolution,
+    ClusterNodeInfo,
+    NodeBastionResolution,
+)
 from app.domain.pipeline_models import (
     PipelineData,
     RunningPipelinesData,
@@ -152,4 +158,52 @@ class DeployServiceClient:
             context="retry_pipeline",
         )
         return PipelineData(**raw["data"])
+
+    # ── inventory proxy ───────────────────────────────────────────────────────
+
+    async def get_node(self, node_name: str) -> ClusterNodeInfo:
+        """Look up cluster node info by node name."""
+        raw = await self._request_with_retry(
+            "GET",
+            f"/api/v1/inventory/nodes/{node_name}",
+            context="inventory.get_node",
+        )
+        return ClusterNodeInfo(**raw["data"])
+
+    async def list_mappings(self, type_name: str) -> list[BastionMapping]:
+        """List bastion-cluster mappings for a bastion type."""
+        raw = await self._request_with_retry(
+            "GET",
+            "/api/v1/inventory/mappings",
+            context="inventory.list_mappings",
+            params={"type": type_name},
+        )
+        return [BastionMapping(**item) for item in raw["data"]]
+
+    async def resolve_node_bastion(
+        self, node_name: str, bastion_type: str | None = None
+    ) -> NodeBastionResolution:
+        """Resolve a node name to its bastion runner."""
+        params: dict[str, str] = {}
+        if bastion_type is not None:
+            params["bastion_type"] = bastion_type
+        raw = await self._request_with_retry(
+            "GET",
+            f"/api/v1/inventory/nodes/{node_name}/bastion-resolution",
+            context="inventory.resolve_node_bastion",
+            params=params,
+        )
+        return NodeBastionResolution(**raw["data"])
+
+    async def resolve_cluster_bastion(
+        self, cluster_name: str
+    ) -> ClusterBastionResolution:
+        """Resolve a cluster name to its bastion runner."""
+        raw = await self._request_with_retry(
+            "GET",
+            "/api/v1/inventory/cluster/bastion-resolution",
+            context="inventory.resolve_cluster_bastion",
+            params={"cluster_name": cluster_name},
+        )
+        return ClusterBastionResolution(**raw["data"])
 
