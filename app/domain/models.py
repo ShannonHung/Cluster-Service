@@ -71,17 +71,41 @@ class HashPasswordRequest(BaseModel):
 # Response models
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _dry_run_default() -> bool:
+    """Resolve the ``dry_run`` marker from settings.
+
+    This is the single place the flag is read for responses — the 31
+    ``ApiResponse(...)`` construction sites across the app are deliberately left
+    untouched, so the marker cannot be forgotten at a new one. Imported lazily
+    to keep ``app.domain`` free of a module-level dependency on ``app.core``.
+    """
+    from app.core.config import get_settings
+
+    return get_settings().DRY_RUN_MODE
+
+
 class ApiResponse(BaseModel, Generic[T]):
     """Unified success response envelope.
 
     All successful endpoints return:
-        {"data": <T>, "request_id": "uuid"}
+        {"data": <T>, "request_id": "uuid", "dry_run": false}
 
     HTTP 2xx status communicates success — no redundant ``success`` field.
+
+    ``dry_run`` defaults to false, so adding it is not a breaking change for
+    existing clients: a field they do not read cannot affect them, and the value
+    they would read matches the behaviour they already get.
     """
 
     data: T
     request_id: str = ""
+    dry_run: bool = Field(
+        default_factory=_dry_run_default,
+        description=(
+            "True when the service is running in dry-run mode and no real "
+            "side effect was performed."
+        ),
+    )
 
 
 class ErrorDetail(BaseModel):
