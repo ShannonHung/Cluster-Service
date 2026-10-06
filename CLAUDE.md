@@ -122,6 +122,30 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 6. Wrap the service call in `await asyncio.to_thread(...)` — see **Never call a Kubernetes service inline from a route** above.
 7. If the endpoint acts on many resources at once, follow the **Batch endpoints** conventions above — colon-suffix route, always-200 partial-success envelope, and a size cap on the request model.
 
+## Dry-Run Mode
+
+`DRY_RUN_MODE=true` is a **deployment-level** switch that lets an e2e pipeline exercise the real HTTP surface without real side effects. It is shared in design with `deploy-service` — see that repo's `docs/arch/dry-run-mode.md` for the full rationale.
+
+**Current state: scaffolding only.** T8 added the setting, the start-up guard and the response marker. **Nothing is stubbed yet** — the deploy-service client and the Kubernetes client are still real, so a dry-run instance *can still mutate a cluster*. The stubs land in T9 (deploy-service client) and T10 (`CoreV1Api`). The start-up banner says so explicitly; do not remove that caveat until the stubs exist.
+
+- Set by environment variable only — never a query param, header or request-body field. A per-request switch would let any caller holding a valid token make a real cordon or drain silently no-op.
+- `create_app()` **raises** when `DRY_RUN_MODE=true` and `APP_ENV=prod`. A hard failure, not a warning: in production a dry-run instance answers 200 to every drain while doing nothing, and nothing alerts.
+- Every `ApiResponse` carries `dry_run` (false by default, so it is not a breaking change). It is resolved by a **single hook** (`_dry_run_default` in `app/domain/models.py`) via `default_factory`, so none of the 31 `ApiResponse(...)` call sites was modified and a new one cannot forget the marker. Use `default_factory`, never `default=` — the latter binds at import and the marker then ignores any later settings change, including every test that toggles the flag.
+- Error responses are built by the exception handler, not by `ApiResponse`, so they carry no marker. That is intentional; keep it that way.
+
+### Not the same as `drain.dry_run`
+
+The node-drain endpoint has a per-request `dry_run` body field. The two are unrelated and **must not be merged or "unified" into one flag**:
+
+| | `drain.dry_run` | `DRY_RUN_MODE` |
+|---|---|---|
+| Scope | One endpoint | Whole service |
+| Set by | The caller, per request | Deployment environment variable |
+| Layer | Router short-circuit | Client / repository injection |
+| Purpose | "Validate this drain without performing it" | "Run the e2e suite without side effects" |
+
+A router short-circuit is correct for `drain`: it is a caller-facing validation affordance on a single operation. It would be wrong for `DRY_RUN_MODE`, which has to leave the validation path intact in order to prove anything — a dry-run that short-circuits at the router answers 200 to everything, so the e2e suite would pass just as happily with auth deleted.
+
 ## Environment Files
 
 | File | Purpose |
