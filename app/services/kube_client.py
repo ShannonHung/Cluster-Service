@@ -107,23 +107,29 @@ class KubeClientFactory:
 
         return CoreV1Api(api_client=self._make_api_client(cfg))
 
-    def get_api_client(self, cfg: KubeClientConfig) -> ApiClient:
-        """Return a raw ApiClient (useful for drain helpers that need one directly)."""
-        return self._make_api_client(cfg)
-
-    @staticmethod
-    def release(kube: CoreV1Api) -> None:
+    @classmethod
+    def release(cls, kube: object) -> None:
         """Release what a client from ``get_core_v1`` holds.
 
-        ``ApiClient.close()`` alone is not enough: it only shuts the thread
-        pool used by ``async_req`` calls, which synchronous calls never create.
-        The sockets to the API server live in the REST client's urllib3 pool
-        manager, which has to be cleared. Anything without an ``api_client``
-        (the dry-run fake) holds no connections and is left alone.
+        Anything without an ``api_client`` (the dry-run fake) holds no
+        connections and is left alone. Never raises: releasing is housekeeping
+        after the call, and an error here must not replace the call's result
+        or its exception — it is logged instead.
         """
         api_client = getattr(kube, "api_client", None)
         if api_client is None:
             return
+        try:
+            cls._release_pool(api_client)
+        except Exception:
+            _logger.warning("Failed to release Kubernetes client", exc_info=True)
+
+    @staticmethod
+    def _release_pool(api_client: ApiClient) -> None:
+        # ApiClient.close() alone is not enough: it only shuts the thread pool
+        # used by async_req calls, which synchronous calls never create. The
+        # sockets to the API server live in the REST client's urllib3 pool
+        # manager, which has to be cleared.
         api_client.rest_client.pool_manager.clear()
         api_client.close()
 

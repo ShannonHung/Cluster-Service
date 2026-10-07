@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock
 
 import pytest
 from kubernetes.client import ApiClient, Configuration, CoreV1Api
@@ -43,31 +43,58 @@ def _real_client() -> CoreV1Api:
 
 @pytest.fixture
 def built(monkeypatch) -> list[CoreV1Api]:
-    """Every client call_kube builds, so a test can inspect it afterwards."""
+    """Every client call_kube builds, its connection pool's clear() spied on.
+
+    Spying on each client's own pool — reached through the same
+    api_client.rest_client.pool_manager chain release uses — means a test fails
+    if release stops clearing it, and also if an SDK upgrade renames any link
+    in that chain.
+    """
     clients: list[CoreV1Api] = []
 
     def get_core_v1(self, cfg):
-        clients.append(_real_client())
-        return clients[-1]
+        kube = _real_client()
+        pool = kube.api_client.rest_client.pool_manager
+        pool.clear = MagicMock(wraps=pool.clear)
+        clients.append(kube)
+        return kube
 
     monkeypatch.setattr(KubeClientFactory, "get_core_v1", get_core_v1)
     return clients
 
 
+def _pool_clear(kube: CoreV1Api) -> MagicMock:
+    return kube.api_client.rest_client.pool_manager.clear
+
+
 # ── sockets ───────────────────────────────────────────────────────────────────
 
 
+def _raise(exc: Exception):
+    raise exc
+
+
 async def test_the_connection_pool_is_cleared_after_the_call(built):
-    with patch("urllib3.PoolManager.clear") as clear:
-        await call_kube(_Repo(), "c1", lambda kube: None)
-    clear.assert_called_once()
+    await call_kube(_Repo(), "c1", lambda kube: None)
+    _pool_clear(built[0]).assert_called_once()
 
 
 async def test_the_client_is_released_even_when_the_call_raises(built):
-    with patch("urllib3.PoolManager.clear") as clear:
-        with pytest.raises(RuntimeError):
-            await call_kube(_Repo(), "c1", lambda kube: (_ for _ in ()).throw(RuntimeError()))
-    clear.assert_called_once()
+    with pytest.raises(RuntimeError):
+        await call_kube(_Repo(), "c1", lambda kube: _raise(RuntimeError("op failed")))
+    _pool_clear(built[0]).assert_called_once()
+
+
+async def test_a_failing_release_does_not_hide_the_result(built, monkeypatch):
+    """Releasing is housekeeping; it must never replace what the call returned."""
+    monkeypatch.setattr(KubeClientFactory, "_release_pool", staticmethod(lambda _: _raise(OSError("boom"))))
+    assert await call_kube(_Repo(), "c1", lambda kube: 42) == 42
+
+
+async def test_a_failing_release_does_not_hide_the_original_error(built, monkeypatch):
+    monkeypatch.setattr(KubeClientFactory, "_release_pool", staticmethod(lambda _: _raise(OSError("boom"))))
+    with pytest.raises(RuntimeError, match="op failed"):
+        await call_kube(_Repo(), "c1", lambda kube: _raise(RuntimeError("op failed")))
 
 
 async def test_the_result_is_returned_unchanged(built):
@@ -101,8 +128,18 @@ def _token_cfg(ca: str) -> KubeClientConfig:
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_ca_files(monkeypatch):
+    """The CA cache is process-global; give each test its own and delete the
+    files it wrote, rather than leaving them for atexit."""
+    monkeypatch.setattr(kube_client, "_CA_FILES", {})
+    yield
+    for path in kube_client._CA_FILES.values():
+        Path(path).unlink(missing_ok=True)
+
+
 def _ca_path(ca: str) -> Path:
-    api_client = KubeClientFactory().get_api_client(_token_cfg(ca))
+    api_client = KubeClientFactory()._make_api_client(_token_cfg(ca))
     return Path(api_client.configuration.ssl_ca_cert)
 
 
@@ -118,10 +155,9 @@ def test_a_different_ca_gets_its_own_file():
 
 
 def test_many_requests_do_not_grow_the_number_of_ca_files():
-    before = len(kube_client._CA_FILES)
-    for _ in range(20):
-        _ca_path(_CA_A)
-    assert len(kube_client._CA_FILES) <= before + 1
+    paths = {_ca_path(_CA_A) for _ in range(20)}
+    assert len(paths) == 1
+    assert len(kube_client._CA_FILES) == 1
 
 
 def test_a_ca_file_deleted_from_disk_is_written_again():
