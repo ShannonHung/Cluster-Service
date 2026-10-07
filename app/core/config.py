@@ -56,9 +56,10 @@ class Settings(BaseSettings):
     # routing, auth, validation and all business logic still run. Design shared
     # with deploy-service: see its docs/arch/dry-run-mode.md.
     #
-    # This ticket (T8) only adds the flag, the startup guard and the response
-    # marker — no behaviour is stubbed yet, so enabling it today changes nothing
-    # except the marker and a warning log. The stubs arrive in T9 / T10.
+    # When on, no Kubernetes cluster and no deploy-service is contacted: the
+    # node routes run against DryRunCoreV1Api (app/services/dry_run_kube_client.py)
+    # and the deploy / command / inventory proxies against in-memory clients
+    # (app/clients/dry_run_*_client.py).
     #
     # Deliberately an environment variable and NOT a request parameter: a
     # per-request switch would let any caller holding a valid token make a real

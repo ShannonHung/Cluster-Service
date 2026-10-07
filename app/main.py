@@ -104,8 +104,8 @@ def _guard_dry_run(settings: Settings) -> None:
         "  DRY-RUN MODE ACTIVE (APP_ENV=%s)\n"
         "  No cluster is contacted: node reads, cordon, drain, label and\n"
         "  annotate all run against an in-memory stand-in.\n"
-        "  NOTE: the deploy-service client is still REAL (stub lands in T9),\n"
-        "  so the deploy and command proxy endpoints still call upstream.\n"
+        "  No deploy-service call is made: the deploy, command and inventory\n"
+        "  proxies answer from an in-memory stand-in and no token is fetched.\n"
         "  Every response is marked with \"dry_run\": true.\n"
         "  This instance must never serve production traffic.\n"
         "═══════════════════════════════════════════════════════════════════",
