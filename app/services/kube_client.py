@@ -9,16 +9,22 @@ and builds an ``ApiClient`` using the appropriate auth mechanism:
   - source="json" | "api" → token + CA data (service-account style)
 
 Each call creates a *fresh* ApiClient + Configuration, preventing
-cross-cluster state pollution in concurrent requests.
+cross-cluster state pollution in concurrent requests — so each one is released
+when its request is done (``KubeClientFactory.release``, called by
+``call_kube``).
 """
 
 from __future__ import annotations
 
 import asyncio
+import atexit
 import base64
+import hashlib
 import logging
+import os
 import ssl
 import tempfile
+import threading
 from pathlib import Path
 from typing import Callable, TypeVar
 
@@ -34,6 +40,34 @@ from app.services.dry_run_kube_client import DryRunCoreV1Api
 _logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+# CA file per distinct CA, keyed by content hash. The SDK accepts a CA only as
+# a file path; writing one per request and never deleting it grew the temp
+# directory without bound. A cluster's CA is the same on every request, so it
+# is written once and reused for the life of the process (as the SDK itself
+# does for kubeconfig-embedded CAs), and removed at exit.
+_CA_FILES: dict[str, str] = {}
+_CA_FILES_LOCK = threading.Lock()
+
+
+def _ca_file(ca_bytes: bytes) -> str:
+    key = hashlib.sha256(ca_bytes).hexdigest()
+    with _CA_FILES_LOCK:
+        path = _CA_FILES.get(key)
+        if path is None or not os.path.exists(path):  # a tmp cleaner may have removed it
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".crt") as tmp:
+                tmp.write(ca_bytes)
+            path = _CA_FILES[key] = tmp.name
+        return path
+
+
+@atexit.register
+def _remove_ca_files() -> None:
+    for path in _CA_FILES.values():
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 class KubeClientFactory:
@@ -76,6 +110,22 @@ class KubeClientFactory:
     def get_api_client(self, cfg: KubeClientConfig) -> ApiClient:
         """Return a raw ApiClient (useful for drain helpers that need one directly)."""
         return self._make_api_client(cfg)
+
+    @staticmethod
+    def release(kube: CoreV1Api) -> None:
+        """Release what a client from ``get_core_v1`` holds.
+
+        ``ApiClient.close()`` alone is not enough: it only shuts the thread
+        pool used by ``async_req`` calls, which synchronous calls never create.
+        The sockets to the API server live in the REST client's urllib3 pool
+        manager, which has to be cleared. Anything without an ``api_client``
+        (the dry-run fake) holds no connections and is left alone.
+        """
+        api_client = getattr(kube, "api_client", None)
+        if api_client is None:
+            return
+        api_client.rest_client.pool_manager.clear()
+        api_client.close()
 
     # ── Private ───────────────────────────────────────────────────────────────
 
@@ -129,13 +179,8 @@ class KubeClientFactory:
         k8s_cfg.api_key = {"authorization": f"Bearer {cfg.token}"}
 
         if cfg.ca_data:
-            # Write CA to a temp file — kubernetes client requires a file path.
-            ca_bytes = base64.b64decode(cfg.ca_data)
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".crt")
-            tmp.write(ca_bytes)
-            tmp.flush()
-            tmp.close()
-            k8s_cfg.ssl_ca_cert = tmp.name
+            # The SDK requires a file path; one file per distinct CA, reused.
+            k8s_cfg.ssl_ca_cert = _ca_file(base64.b64decode(cfg.ca_data))
         else:
             # No CA provided — disable verification (use only in dev/test).
             _logger.warning(
@@ -166,12 +211,18 @@ async def call_kube(
     three can be left behind (CLAUDE.md, "Never call a Kubernetes service
     inline from a route").
 
-    A fresh client per call, as ``KubeClientFactory`` requires.
+    A fresh client per call, as ``KubeClientFactory`` requires — and released
+    when the call is done, whether it returned or raised, so connections to
+    the API server do not pile up until garbage collection.
     """
 
     def _run() -> T:
         cfg = repo.get_kube_client_config(cluster)
-        kube = KubeClientFactory().get_core_v1(cfg)
-        return op(kube)
+        factory = KubeClientFactory()
+        kube = factory.get_core_v1(cfg)
+        try:
+            return op(kube)
+        finally:
+            factory.release(kube)
 
     return await asyncio.to_thread(_run)
