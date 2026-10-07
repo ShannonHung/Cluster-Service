@@ -13,6 +13,9 @@
 #
 # A ClusterRole, not a namespaced Role: nodes are cluster-scoped, and pod
 # listing accepts namespace="*".
+#
+# The `antigravity` namespace is a placeholder — put the ServiceAccount wherever
+# suits the managed cluster, and change it in both places below.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

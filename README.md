@@ -204,7 +204,7 @@ needs no Kubernetes permission.
 2. Add `dependencies=[Depends(get_current_user(["your_scope"]))]` to the `APIRouter`.
 3. Mount it in `app/api/router.py`.
 4. Add the scope to relevant users in `data/users.json`.
-5. If it makes a new Kubernetes API call, grant it in `docs/rbac/cluster-service-clusterrole.yaml` and add a row to the table above.
+5. If it calls a `CoreV1Api` method not used before, map it in `_PERMISSIONS` in `tests/unit/test_rbac_reference.py`, grant it in `docs/rbac/cluster-service-clusterrole.yaml`, and add a row to the table above.
 
 ---
 
