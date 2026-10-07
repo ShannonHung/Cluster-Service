@@ -53,9 +53,11 @@ router (app/api/v1/)
 For Kubernetes endpoints there is an additional indirection:
 
 ```
-router → ClusterRepository.get_kube_client_config(cluster)
-       → KubeClientFactory.get_core_v1(cfg)
-       → NodeService / ClusterManager (consume the live CoreV1Api)
+router ─ Depends(get_cluster_repo) ──────────────── the one dry-run seam for credentials
+       └─ await call_kube(repo, cluster, op) ──── one worker thread, all three steps:
+             ClusterRepository.get_kube_client_config(cluster)
+             → KubeClientFactory.get_core_v1(cfg)
+             → op(kube): NodeService / ConfigMapService consume the live CoreV1Api
 ```
 
 ### Key design points
@@ -108,7 +110,7 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 - **Always HTTP 200** when the cluster itself was reachable, even if every node failed. The status code describes the request; per-node outcomes live in `results`, with a `summary` so callers can branch on one field. 207 Multi-Status was rejected — proxies and clients handle it inconsistently.
 - Success and failure entries share **one** model (`BatchNodeResult`); success leaves the error fields unset. Don't split them into a union — it generates an awkward `anyOf` in OpenAPI-derived clients.
 - Batch size is capped at 100 by the Pydantic request model, so the bound is visible in the OpenAPI schema and an oversized batch is a 422 before any work starts.
-- Like every other node route, these run the service call through **`asyncio.to_thread`** — see below.
+- Like every other Kubernetes route, these run through **`call_kube`** (credentials, client and call in one worker thread) — see below.
 
 **Never call a Kubernetes service inline from a route.** `NodeService` and `ConfigMapService` are synchronous — the `kubernetes` SDK blocks on urllib3 sockets — so calling it directly from an `async def` handler holds the single event-loop thread for the whole operation, and the process answers nothing meanwhile, health checks included. Resolving credentials and building the client block too (a kubeconfig read, possibly an exec credential plugin for EKS / GKE, a CA temp file), so every route goes through **`call_kube(repo, cluster, lambda kube: svc.op(..., kube=kube))`** (`app/services/kube_client.py`), which does all three in one `asyncio.to_thread` — a route never threads the pieces itself, so none can be left behind. `tests/integration/test_kube_routes_off_event_loop.py` records where each of the three ran for every Kubernetes route; add new routes to its `_ROUTES` table (a guard fails when a router taking `get_cluster_repo` is missing from it). This matters most for `drain`, whose wait budget is 25s (`DRAIN_DEFAULT_TIMEOUT_SECONDS`) and whose poll loop sleeps between attempts: inline, one drain could freeze the pod long enough for a liveness probe to restart it. Note the worker pool is bounded (FastAPI defaults to 40 threads), so this converts "everything freezes" into "long operations queue past 40 concurrent" — better, but not unbounded.
 

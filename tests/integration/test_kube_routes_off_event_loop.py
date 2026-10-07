@@ -24,9 +24,11 @@ see the recording one, and fails here on an empty record.
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
@@ -137,26 +139,68 @@ def test_blocking_work_runs_off_the_event_loop(
     assert seen == {"credentials": False, "client": False, "kube call": False}
 
 
+# Routes that take the cluster repository but contact no cluster, with the reason.
+_NO_CLUSTER_CONTACT = {
+    ("GET", "/api/v1/clusters"): "lists the configured clusters from local files",
+}
+
+
 def test_no_router_keeps_a_private_copy_of_the_seam():
     """The dry-run switch for cluster credentials lives in get_cluster_repo
-    only. A router building a repository itself would bypass it — and in
-    dry-run would go looking for a real kubeconfig."""
+    only. A router building any repository itself — Yaml, Json, DryRun, or one
+    added later — would bypass it, and in dry-run go looking for a real
+    kubeconfig."""
+    constructs = re.compile(r"\b\w*ClusterRepository\(")
     offenders = sorted(
-        path.name
-        for path in _ROUTERS.glob("*.py")
-        if "DryRunClusterRepository" in path.read_text()
-        or "YamlClusterRepository" in path.read_text()
+        path.name for path in _ROUTERS.glob("*.py") if constructs.search(path.read_text())
     )
     assert offenders == []
 
 
-def test_every_router_reaching_a_cluster_is_tabled():
-    """A router that takes the cluster repository talks to a cluster; its
-    routes belong in _ROUTES."""
-    reaching = {
-        path.stem
-        for path in _ROUTERS.glob("*.py")
-        if "get_cluster_repo" in path.read_text()
-    }
-    assert reaching, "the scan found nothing — the guard is not looking in the right place"
-    assert reaching - {module for module, *_ in _ROUTES} == set(), "add these routers' routes to _ROUTES"
+def _depends_on(dependant, target) -> bool:
+    return any(
+        d.call is target or _depends_on(d, target) for d in dependant.dependencies
+    )
+
+
+def test_every_route_reaching_a_cluster_is_tabled(client):
+    """Per route, not per file: every route whose dependency tree includes
+    get_cluster_repo is either exercised by the table above or excused with a
+    reason. A new route in an already-tabled router cannot slip past."""
+    tabled = {(m.upper(), p) for _, m, p, _, _ in _ROUTES}
+    missing = []
+    for route in client.app.routes:
+        if not isinstance(route, APIRoute) or not _depends_on(route.dependant, get_cluster_repo):
+            continue
+        for method in route.methods:
+            if (method, route.path) in _NO_CLUSTER_CONTACT:
+                continue
+            if not any(
+                m == method and route.path_regex.match(p) for m, p in tabled
+            ):
+                missing.append(f"{method} {route.path}")
+    assert missing == [], "add these routes to _ROUTES"
+
+
+def test_a_missing_cluster_raised_in_the_thread_is_still_a_404(monkeypatch, tmp_path):
+    """call_kube resolves the cluster inside the worker thread; the exception
+    must still reach the app's handler and become the structured 404."""
+    monkeypatch.setenv("DRY_RUN_MODE", "false")
+    monkeypatch.setenv("KUBECONFIG_BASE_PATH", str(tmp_path))  # no clusters configured
+    get_settings.cache_clear()
+    from app.main import create_app
+
+    try:
+        with TestClient(create_app()) as live:
+            token = live.post(
+                "/token", data={"username": "test_admin", "password": "secret"}
+            ).json()["access_token"]
+            resp = live.get(
+                "/api/v1/clusters/no-such-cluster/nodes/n1",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    finally:
+        get_settings.cache_clear()
+
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "CLUSTER_NOT_FOUND"
