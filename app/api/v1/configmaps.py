@@ -13,7 +13,6 @@ annotation — reading content is a separate, higher privilege (CONTEXT.md).
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -27,8 +26,6 @@ from app.repositories.dry_run_cluster_repository import DryRunClusterRepository
 from app.repositories.yaml_cluster_repository import YamlClusterRepository
 from app.services.configmap_service import ConfigMapService
 from app.services.kube_client import KubeClientFactory
-
-_logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/clusters", tags=["configmaps"])
 
