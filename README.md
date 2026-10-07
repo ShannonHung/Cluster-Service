@@ -165,12 +165,46 @@ POST /api/v1/auth/hash-password  {"password": "mypassword"}
 
 ---
 
+## Kubernetes Permissions (RBAC)
+
+The credentials cluster-service uses for each managed cluster need the
+permissions below. A reference ServiceAccount + ClusterRole + ClusterRoleBinding
+lives in [`docs/rbac/cluster-service-clusterrole.yaml`](docs/rbac/cluster-service-clusterrole.yaml);
+apply it to every managed cluster and use that ServiceAccount's token.
+
+> ⚠️ Local k3d uses an **admin** kubeconfig, so a missing permission never
+> fails locally — it only shows up as a 403 in production.
+> `tests/unit/test_rbac_reference.py` keeps the reference file in step with the
+> code, but cannot check what is actually applied to your clusters.
+
+| Endpoint | Resource | Verbs |
+|----------|----------|-------|
+| `GET /clusters/{cluster}/nodes` | `nodes` | `list` |
+| `GET /clusters/{cluster}/nodes/{node}` | `nodes` | `get` |
+| `POST /clusters/{cluster}/nodes/{node}/cordon` | `nodes` | `patch` |
+| `POST /clusters/{cluster}/nodes/{node}/uncordon` | `nodes` | `get`, `patch` |
+| `POST /clusters/{cluster}/nodes:cordon` | `nodes` | `patch` |
+| `POST /clusters/{cluster}/nodes:uncordon` | `nodes` | `list`, `patch` |
+| `POST /clusters/{cluster}/nodes/{node}/drain` | `nodes` | `patch` |
+| | `pods` | `list`, `delete` (`delete` only with `disable_eviction=true`) |
+| | `pods/eviction` | `create` |
+| `PATCH /clusters/{cluster}/nodes/{node}/labels` | `nodes` | `get`, `patch` |
+| `PATCH /clusters/{cluster}/nodes/{node}/annotations` | `nodes` | `get`, `patch` |
+| `PATCH /clusters/{cluster}/nodes/{node}/taints` | `nodes` | `get`, `patch` |
+| `GET /clusters/{cluster}/pods` | `pods` | `list` |
+
+All paths are under `/api/v1`. `GET /clusters` reads local config only and
+needs no Kubernetes permission.
+
+---
+
 ## Adding a New Protected Endpoint
 
 1. Create a router in `app/api/v1/`.
 2. Add `dependencies=[Depends(get_current_user(["your_scope"]))]` to the `APIRouter`.
 3. Mount it in `app/api/router.py`.
 4. Add the scope to relevant users in `data/users.json`.
+5. If it calls a `CoreV1Api` method not used before, map it in `_PERMISSIONS` in `tests/unit/test_rbac_reference.py`, grant it in `docs/rbac/cluster-service-clusterrole.yaml`, and add a row to the table above.
 
 ---
 
