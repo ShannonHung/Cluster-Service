@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -41,6 +42,28 @@ _ROUTES = [
     ("configmaps", f"{_CLUSTER}/configmaps", {"namespace": "*"}),
     ("configmaps", f"{_CLUSTER}/namespaces/default/configmaps/dry-run-app-config", {}),
 ]
+
+
+# Router modules that build a Kubernetes client but are not (yet) in _ROUTES,
+# each with the reason. Anything else that builds one fails the guard below.
+_NOT_YET_COVERED = {
+    "nodes": "only the service call is threaded; client construction moves with #36",
+}
+
+_ROUTERS = Path(__file__).resolve().parents[2] / "app" / "api" / "v1"
+
+
+def test_every_router_building_a_kube_client_is_covered():
+    """The table above is only as good as its completeness: a new router that
+    builds a Kubernetes client must be added to it (or excused, with a reason)."""
+    building = {
+        path.stem
+        for path in _ROUTERS.glob("*.py")
+        if "KubeClientFactory" in path.read_text()
+    }
+    covered = {module for module, _, _ in _ROUTES} | _NOT_YET_COVERED.keys()
+    assert building - covered == set(), "add these routers' routes to _ROUTES"
+    assert building, "the scan found nothing — the guard is not looking in the right place"
 
 
 @pytest.fixture
@@ -79,7 +102,9 @@ class _RecordingKube:
         target = getattr(self._inner, name)
 
         def call(*args, **kwargs):
-            self._seen["kube call"] = _on_event_loop()
+            # Sticky: one call on the loop fails the route even if a later
+            # call ran in a thread.
+            self._seen["kube call"] = self._seen.get("kube call", False) or _on_event_loop()
             return target(*args, **kwargs)
 
         return call
