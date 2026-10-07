@@ -102,10 +102,11 @@ def _guard_dry_run(settings: Settings) -> None:
     _logger.warning(
         "═══════════════════════════════════════════════════════════════════\n"
         "  DRY-RUN MODE ACTIVE (APP_ENV=%s)\n"
-        "  Responses are marked with \"dry_run\": true.\n"
-        "  NOTE: behaviour is not stubbed yet — the deploy-service client and\n"
-        "  the Kubernetes client are still REAL (stubs land in T9 / T10), so\n"
-        "  this instance can still mutate a cluster.\n"
+        "  No cluster is contacted: node reads, cordon, drain, label and\n"
+        "  annotate all run against an in-memory stand-in.\n"
+        "  NOTE: the deploy-service client is still REAL (stub lands in T9),\n"
+        "  so the deploy and command proxy endpoints still call upstream.\n"
+        "  Every response is marked with \"dry_run\": true.\n"
         "  This instance must never serve production traffic.\n"
         "═══════════════════════════════════════════════════════════════════",
         settings.APP_ENV,
