@@ -12,6 +12,7 @@ All endpoints require the ``cluster_api`` scope.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Annotated
 
@@ -93,7 +94,13 @@ async def list_nodes(
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
     repo: ClusterRepository = Depends(_get_cluster_repo),
 ) -> ApiResponse[NodeListData]:
-    cfg = repo.get_kube_client_config(cluster)
-    kube = KubeClientFactory().get_core_v1(cfg)
-    data = NodeService().list_nodes(cluster=cluster, kube=kube)
+    def _list() -> NodeListData:
+        # Credentials, client construction and the call all block; run them
+        # together off the event loop (CLAUDE.md, "Never call a Kubernetes
+        # service inline from a route").
+        cfg = repo.get_kube_client_config(cluster)
+        kube = KubeClientFactory().get_core_v1(cfg)
+        return NodeService().list_nodes(cluster=cluster, kube=kube)
+
+    data = await asyncio.to_thread(_list)
     return ApiResponse(data=data, request_id=_request_id(request))

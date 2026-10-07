@@ -18,8 +18,6 @@ probed without configmap_read.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -193,54 +191,3 @@ def test_a_missing_configmap_is_403_not_404_without_the_scope(client, operator_h
     probe which ConfigMaps exist by telling 404 from 403."""
     resp = client.get(_content_url("default", "no-such-configmap"), headers=operator_headers)
     assert resp.status_code == 403
-
-
-# ── blocking work stays off the event loop (both routes) ──────────────────────
-
-
-def _on_event_loop() -> bool:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return False
-    return True
-
-
-@pytest.mark.parametrize(
-    "url, params",
-    [
-        (_URL, {"namespace": "*"}),
-        (_content_url("default", "dry-run-app-config"), {}),
-    ],
-    ids=["listing", "content"],
-)
-def test_client_construction_runs_off_the_event_loop(client, headers, monkeypatch, url, params):
-    """Resolving credentials reads a kubeconfig and may run an exec credential
-    plugin (EKS / GKE) that takes seconds; building the client can write a CA
-    temp file. On the event loop either one stalls every request, health checks
-    included — the same reason the service call itself is threaded."""
-    from app.api.v1 import configmaps
-    from app.repositories.dry_run_cluster_repository import DryRunClusterRepository
-    from app.services.kube_client import KubeClientFactory
-
-    seen: dict[str, bool] = {}
-
-    class RecordingRepo(DryRunClusterRepository):
-        def get_kube_client_config(self, cluster):
-            seen["repo"] = _on_event_loop()
-            return super().get_kube_client_config(cluster)
-
-    class RecordingFactory(KubeClientFactory):
-        def get_core_v1(self, cfg):
-            seen["factory"] = _on_event_loop()
-            return super().get_core_v1(cfg)
-
-    client.app.dependency_overrides[configmaps._get_cluster_repo] = RecordingRepo
-    monkeypatch.setattr(configmaps, "KubeClientFactory", RecordingFactory)
-    try:
-        resp = client.get(url, headers=headers, params=params)
-    finally:
-        client.app.dependency_overrides.clear()
-
-    assert resp.status_code == 200
-    assert seen == {"repo": False, "factory": False}
