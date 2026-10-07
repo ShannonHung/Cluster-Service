@@ -50,6 +50,25 @@ class Settings(BaseSettings):
     DEPLOY_SERVICE_PASSWORD: str = ""
     DEPLOY_SERVICE_TOKEN: str = ""  # Optional initial/cached token
 
+    # ── Dry-run (e2e pipeline testing) ────────────────────────────────────────
+    # When true, the outermost side-effecting collaborators (the deploy-service
+    # HTTP client and the Kubernetes API client) are replaced with stubs, while
+    # routing, auth, validation and all business logic still run. Design shared
+    # with deploy-service: see its docs/arch/dry-run-mode.md.
+    #
+    # When on, no Kubernetes cluster and no deploy-service is contacted: the
+    # node routes run against DryRunCoreV1Api (app/services/dry_run_kube_client.py)
+    # and the deploy / command / inventory proxies against in-memory clients
+    # (app/clients/dry_run_*_client.py).
+    #
+    # Deliberately an environment variable and NOT a request parameter: a
+    # per-request switch would let any caller holding a valid token make a real
+    # cluster mutation silently no-op. Distinct from the per-request
+    # `drain.dry_run` field on the node-drain endpoint, which is a caller-facing
+    # validation affordance on one operation — the two must not be unified.
+    # Combining this with APP_ENV=prod is refused at startup (see app/main.py).
+    DRY_RUN_MODE: bool = False
+
     model_config = SettingsConfigDict(
         # Load order: .env (base) → .env.{APP_ENV} (env-specific overrides).
         # Missing files are silently ignored, so a plain .env alone is enough.

@@ -27,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.api.router import api_router
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.dependencies import set_access_cookie, safe_next_path
 from app.core.exceptions import (
     AuthException,
@@ -76,8 +76,46 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 # App factory
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _guard_dry_run(settings: Settings) -> None:
+    """Refuse to start a production process in dry-run mode.
+
+    Dry-run turns every write path into a no-op that still answers 200. In
+    production that is worse than an outage: node drains and cordons silently do
+    nothing while every caller sees success. This is a hard failure rather than
+    a warning precisely because warnings get ignored — the process must not
+    reach a serving state.
+
+    Called before the FastAPI instance is built so a misconfigured deploy dies
+    at import time rather than passing a health check. Shares its design with
+    deploy-service; see that repo's docs/arch/dry-run-mode.md.
+    """
+    if not settings.DRY_RUN_MODE:
+        return
+
+    if settings.APP_ENV == "prod":
+        raise RuntimeError(
+            "DRY_RUN_MODE=true is refused when APP_ENV=prod: every write path "
+            "would become a silent no-op that still returns 200. Unset "
+            "DRY_RUN_MODE, or run the dry-run instance under a non-prod APP_ENV."
+        )
+
+    _logger.warning(
+        "═══════════════════════════════════════════════════════════════════\n"
+        "  DRY-RUN MODE ACTIVE (APP_ENV=%s)\n"
+        "  No cluster is contacted: node reads, cordon, drain, label and\n"
+        "  annotate all run against an in-memory stand-in.\n"
+        "  No deploy-service call is made: the deploy, command and inventory\n"
+        "  proxies answer from an in-memory stand-in and no token is fetched.\n"
+        "  Every response is marked with \"dry_run\": true.\n"
+        "  This instance must never serve production traffic.\n"
+        "═══════════════════════════════════════════════════════════════════",
+        settings.APP_ENV,
+    )
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
+    _guard_dry_run(settings)
 
     app = FastAPI(
         title=settings.APP_NAME,

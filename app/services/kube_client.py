@@ -23,8 +23,10 @@ from pathlib import Path
 from kubernetes import client, config as kube_config
 from kubernetes.client import ApiClient, CoreV1Api, Configuration
 
+from app.core.config import get_settings
 from app.core.exceptions import KubeApiException
 from app.domain.kubernetes_models import KubeClientConfig
+from app.services.dry_run_kube_client import DryRunCoreV1Api
 
 _logger = logging.getLogger(__name__)
 
@@ -46,7 +48,24 @@ class KubeClientFactory:
 
         Raises:
             KubeApiException: If the config cannot be loaded.
+
+        In dry-run a fake, CoreV1Api-shaped object is returned instead and no
+        connection is opened. NodeService is handed this exactly as it would be
+        handed the real client, so all of its business logic — the uncordon
+        readiness gate, drain's refuse-before-evict check, the batch failure
+        layering — still runs. A fresh instance per call preserves the
+        isolation guarantee documented above. See
+        app/services/dry_run_kube_client.py.
         """
+        if get_settings().DRY_RUN_MODE:
+            _logger.warning(
+                "DRY-RUN | op=kube.get_core_v1 | cluster=%s | "
+                "no Kubernetes client was created",
+                cfg.cluster_name,
+            )
+            # Keyed by cluster so two dry-run clusters do not share state.
+            return DryRunCoreV1Api(cfg.cluster_name)  # type: ignore[return-value]
+
         return CoreV1Api(api_client=self._make_api_client(cfg))
 
     def get_api_client(self, cfg: KubeClientConfig) -> ApiClient:

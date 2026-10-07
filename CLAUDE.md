@@ -62,10 +62,11 @@ router → ClusterRepository.get_kube_client_config(cluster)
 
 **Config / environments** (`app/core/config.py`): `APP_ENV` selects the env file. Settings loads `.env` then `.env.{APP_ENV}` (override order). `get_settings()` is `lru_cache`'d — reset it in tests with `get_settings.cache_clear()`. `KUBECONFIG_BASE_PATH`, `CORDON_LABEL_REASON`, `CORDON_LABEL_BY`, and the `DEPLOY_SERVICE_*` values are all sourced from here, never hardcoded.
 
-**Auth** (`app/core/security.py`, `app/core/dependencies.py`): JWT (HS256) + bcrypt. Use `Depends(get_current_user(["scope_name"]))` on any route. Three scopes are in use:
+**Auth** (`app/core/security.py`, `app/core/dependencies.py`): JWT (HS256) + bcrypt. Use `Depends(get_current_user(["scope_name"]))` on any route. Four scopes are in use:
 - `cluster_api` — gates all `/api/v1/clusters/...` and `/api/v1/clusters/{cluster}/nodes/...` endpoints.
 - `deploy_api` — gates all `/api/v1/deploy/...` endpoints.
 - `command_api` — gates all `/api/v1/command/...` endpoints.
+- `inventory_api` — gates all `/api/v1/inventory/...` endpoints.
 
 The `/token` OAuth2 endpoint is registered directly on the root app (not on a versioned router) so Swagger UI can auto-fill Authorization headers.
 
@@ -83,7 +84,7 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 - `cordon_many` / `uncordon_many` are the batch equivalents, both thin wrappers over `_batch_set_unschedulable`. The batch loop is **sequential** (Kubernetes has no transaction across N node patches, and a single patch is cheap) and de-duplicates node names so `results` is safe to key by name.
 - **Failure layering is the load-bearing rule for batches.** A per-node failure is collected into `results` and never aborts the batch; a *cluster*-level failure propagates as an exception so the caller sees one error instead of N identical ones. `_is_cluster_level` decides which is which: connection errors (tagged `cluster_level` by `_connection_error`) and 401/403 from the API server. When adding a new failure mode, decide which side it belongs on — getting this wrong reports "your credentials are dead" as "these 8 nodes are broken".
 - `drain` always skips DaemonSet pods, mirror/static pods, and completed/failed pods (not user-configurable). Eviction honours PDBs by default; pass `disable_eviction=true` in `DrainOptions` to bypass with a raw delete. `dry_run` is resolved at the router layer and never reaches the service.
-- **Drain refuses before it evicts.** Unmanaged pods (no `ownerReferences`) and emptyDir pods are *protected*: without `force` / `delete_emptydir_data` the whole drain returns 400 `DRAIN_BLOCKED` naming every blocked pod and every option needed, having touched nothing. Partial drains are not a thing — evicted pods cannot be recalled, so a half-drained node is worse than an untouched one. The always-skipped categories are checked first, so a DaemonSet pod using emptyDir is skipped, never blocked.
+- **Drain refuses before it evicts.** Unmanaged pods (no `ownerReferences`) and emptyDir pods are *protected*: without `force` / `delete_emptydir_data` the whole drain returns 400 `DRAIN_BLOCKED` naming every blocked pod and every option needed, having evicted nothing. The node does stay cordoned — deliberately, so a corrected retry has nothing to redo (ADR 0001). Partial drains are not a thing — evicted pods cannot be recalled, so a half-drained node is worse than an untouched one. The always-skipped categories are checked first, so a DaemonSet pod using emptyDir is skipped, never blocked.
 - **Outliving the drain wait budget is not an error.** `DRAIN_DEFAULT_TIMEOUT_SECONDS` bounds how long drain *watches*, not what it asks for. When it expires, drain returns 200 with `still_terminating`, `node_emptied` and `forced_deletion` — every eviction was accepted, and a pod with a long `terminationGracePeriodSeconds` is behaving as configured. There is no `DrainTimeoutException`; see `docs/adr/0001-*`.
 - `label_node` / `annotate_node` accept a `set` map and a `remove` list, then re-read the node and return the full current label/annotation state in the response.
 
@@ -121,6 +122,83 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 5. Add the scope to the relevant entries in `data/users.json`.
 6. Wrap the service call in `await asyncio.to_thread(...)` — see **Never call a Kubernetes service inline from a route** above.
 7. If the endpoint acts on many resources at once, follow the **Batch endpoints** conventions above — colon-suffix route, always-200 partial-success envelope, and a size cap on the request model.
+
+## Dry-Run Mode
+
+`DRY_RUN_MODE=true` is a **deployment-level** switch that lets an e2e pipeline exercise the real HTTP surface without real side effects. It is shared in design with `deploy-service` — see that repo's `docs/arch/dry-run-mode.md` for the full rationale.
+
+**Current state: both sides are stubbed.** T8 added the setting, the start-up guard and the response marker; T10 added the fake `CoreV1Api` and cluster repository, so no cluster is contacted and no kubeconfig is read; T9 added the deploy-service fakes, so no deploy-service call is made and no deploy-service token is fetched. The start-up banner states exactly this — keep it in step with reality, and note that `test_the_warning_names_what_is_still_real` exists to go red when it drifts.
+
+### Enabling it
+
+```bash
+DRY_RUN_MODE=true APP_ENV=dev uv run uvicorn app.main:app --port 8000
+```
+
+Any `APP_ENV` except `prod` (which refuses to start — see **Invariants**). Confirm it took effect from the start-up banner, or from `"dry_run": true` on any success response.
+
+**It needs no production secret.** No kubeconfig (nothing is read from `KUBECONFIG_BASE_PATH`), no `DEPLOY_SERVICE_PASSWORD` or `DEPLOY_SERVICE_TOKEN` (no token is fetched), and no reachable cluster or deploy-service. The one secret it does use is `SECRET_KEY`, to sign and verify its *own* JWTs — give a dry-run instance its own key, never production's, or tokens minted against it would be valid in production.
+
+### What still runs
+
+Only the outermost side-effecting collaborators are replaced. Everything a caller can observe a decision from is real:
+
+- authentication and scope checks (401 / 403), Pydantic validation (422) including the batch cap of 100, enforced before any work
+- every `NodeService` rule: the uncordon readiness gate (409 `NODE_NOT_READY`, no override), drain's refuse-before-evict (400 `DRAIN_BLOCKED`), the always-skipped pod categories, batch failure layering
+- `PipelineService`, `CommandService`, `InventoryProxyService`, and the `DeployServiceError` code / status mapping
+- the published contract: the OpenAPI document is identical to production's, as are the error envelope and the `X-Coordination-ID` → `request_id` round trip
+
+`tests/integration/test_dry_run_deny_paths.py` holds the refusals across every router in one place. It exists because a suite asserting only 200s would pass just as well against a dry-run that skipped all of the above.
+
+### The Kubernetes seam (T10)
+
+Two things are replaced, both *below* `NodeService`:
+
+- **`_get_cluster_repo`** → `DryRunClusterRepository`. Swapped first because the real repositories resolve a cluster by reading a file from `KUBECONFIG_BASE_PATH`; stubbing only the factory would still demand credentials on disk. Any cluster name resolves.
+- **`KubeClientFactory.get_core_v1`** → `DryRunCoreV1Api`, a fake holding the SDK's own model objects (`V1Node`, `V1Pod`, …) rather than mocks.
+
+`NodeService` itself is untouched, so **all of its business logic still runs**: the uncordon readiness gate (allowlist — only `"Ready"` passes), drain's refuse-before-evict check, the always-skipped pod categories, and the per-node vs cluster-level failure layering in the batch endpoints. Those refusals are the assertions worth having; a router-level short-circuit would answer 200 to every one of them. `tests/integration/test_dry_run_node_routes.py` enforces this — short-circuiting `uncordon` in the router makes the two readiness tests fail.
+
+Two details that are load-bearing rather than cosmetic:
+
+- **Cluster state is mutable and shared per cluster name**, cleared by `reset_dry_run_clusters()`. A cordon must still be in effect on the next request, because that is how a real cluster behaves. Call the reset in any test that mutates state — it is process-global, like `get_settings.cache_clear()`.
+- **Eviction actually removes the pod.** `_wait_for_pods_gone` polls `list_pod_for_all_namespaces` until the targeted pods are gone, with a 25s budget. A fake with a fixed pod list turns every clean drain into a full-budget wait reporting `still_terminating` — a slow false failure. Removing the mutation makes the dry-run suite take ~116s instead of ~13s.
+
+The fake's pod fixture deliberately contains one of each category drain treats differently (evictable, DaemonSet, mirror, completed, unmanaged, emptyDir, plus one on another node). Dropping any of them silently stops exercising a branch.
+
+### The deploy-service seam (T9)
+
+The three proxy factories — `_get_pipeline_service`, `_get_command_service`, `_get_inventory_service` — are the only construction points, so they are the seam; `PipelineService`, `CommandService` and `InventoryProxyService` are untouched.
+
+- **`DeployServiceClient`** → `DryRunDeployServiceClient` (pipelines *and* inventory — both live on the real client). **`CommandServiceClient`** → `DryRunCommandServiceClient`; the command proxy has its own client, so it needs its own fake.
+- **Not subclasses.** Inheriting would make any method the fake forgot to override fall through to real HTTP. `tests/unit/test_dry_run_deploy_clients.py` compares public signatures method by method instead — add a method to a real client and that test goes red until the fake has it too.
+- **No token manager.** In dry-run the factories never call `get_deploy_token_manager()`, so the singleton is not even constructed, `DEPLOY_SERVICE_PASSWORD` is not needed and upstream `/token` is never hit. This is why the factories call it inside the live branch rather than taking it via `Depends`.
+- **Errors go through the real adapter.** Where deploy-service would refuse (unknown pipeline, duplicate running pipeline, non-whitelisted command, unknown inventory node, `?format=json` on a text command, killing a non-killable command) the fakes raise `DeployServiceError` from a deploy-service-shaped body, so `_DEPLOY_CODE_MAP` / `_DEPLOY_STATUS_MAP` and the inventory 404 translation stay live. Don't replace those with direct `NotFoundException`s.
+- **Lifecycle**: a pipeline or command is `running` when created and `success` from its first observation (status poll; for commands, a result *or* trace poll — the HTML viewer only polls the trace). State is process-global; clear it with `reset_dry_run_deploy_service()` / `reset_dry_run_command_service()`.
+- **Fixtures**: commands `dry_run_ansible_ping` (text, killable, logged) and `dry_run_ansible_facts` (json, not killable, not logged) — one of each shape a caller branches on. Inventory answers for the same node names as `DryRunCoreV1Api` and the cluster names of `DryRunClusterRepository`.
+- Identifiers are synthetic: pipeline ids ≥ 9,990,000,001, `dry-run-` command ids, `.invalid` URLs, TEST-NET-1 (`192.0.2.x`) addresses.
+
+### Invariants
+
+- Set by environment variable only — never a query param, header or request-body field. A per-request switch would let any caller holding a valid token make a real cordon or drain silently no-op.
+- `create_app()` **raises** when `DRY_RUN_MODE=true` and `APP_ENV=prod`. A hard failure, not a warning: in production a dry-run instance answers 200 to every drain while doing nothing, and nothing alerts.
+- Every `ApiResponse` carries `dry_run` (false by default, so it is not a breaking change). It is resolved by a **single hook** (`_dry_run_default` in `app/domain/models.py`) via `default_factory`, so none of the 31 `ApiResponse(...)` call sites was modified and a new one cannot forget the marker. Use `default_factory`, never `default=` — the latter binds at import and the marker then ignores any later settings change, including every test that toggles the flag.
+- Error responses are built by the exception handler, not by `ApiResponse`, so they carry no marker. That is intentional; keep it that way.
+
+### Not the same as `drain.dry_run`
+
+The node-drain endpoint has a per-request `dry_run` body field. The two are unrelated and **must not be merged or "unified" into one flag**:
+
+| | `drain.dry_run` | `DRY_RUN_MODE` |
+|---|---|---|
+| Scope | One endpoint | Whole service |
+| Set by | The caller, per request | Deployment environment variable |
+| Layer | Router short-circuit | Client / repository injection |
+| Purpose | "Validate this drain without performing it" | "Run the e2e suite without side effects" |
+
+They **coexist and do not interact**: with `DRY_RUN_MODE=true`, a drain sent with `dry_run: true` still short-circuits at the router and never reaches the fake (`test_request_level_drain_dry_run_still_short_circuits`); with it false, the deployment flag changes nothing about that request.
+
+A router short-circuit is correct for `drain`: it is a caller-facing validation affordance on a single operation. It would be wrong for `DRY_RUN_MODE`, which has to leave the validation path intact in order to prove anything — a dry-run that short-circuits at the router answers 200 to everything, so the e2e suite would pass just as happily with auth deleted.
 
 ## Environment Files
 
