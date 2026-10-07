@@ -22,6 +22,7 @@ from app.core.dependencies import get_current_user
 from app.domain.kubernetes_models import ClusterListData, NodeListData
 from app.domain.models import ApiResponse, User
 from app.repositories.cluster_repository import ClusterRepository
+from app.repositories.dry_run_cluster_repository import DryRunClusterRepository
 from app.repositories.yaml_cluster_repository import YamlClusterRepository
 from app.services.cluster_manager import ClusterManager
 from app.services.kube_client import KubeClientFactory
@@ -35,7 +36,17 @@ router = APIRouter(prefix="/clusters", tags=["clusters"])
 # ── Dependency providers ──────────────────────────────────────────────────────
 
 def _get_cluster_repo() -> ClusterRepository:
+    """Resolve the cluster-config source.
+
+    In dry-run this is swapped *before* any kubeconfig is read: the real
+    repositories resolve a cluster by reading a file from
+    KUBECONFIG_BASE_PATH, so stubbing only the client factory would still
+    demand credentials on disk. A dry-run instance holds none. See
+    app/repositories/dry_run_cluster_repository.py.
+    """
     settings = get_settings()
+    if settings.DRY_RUN_MODE:
+        return DryRunClusterRepository()
     return YamlClusterRepository(settings.KUBECONFIG_BASE_PATH)
 
 

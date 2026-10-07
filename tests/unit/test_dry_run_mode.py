@@ -95,16 +95,32 @@ def test_dry_run_start_warns_loudly(caplog):
     assert "DRY-RUN MODE ACTIVE" in caplog.text
 
 
-def test_the_warning_admits_behaviour_is_not_stubbed_yet(caplog):
-    """T8 ships the scaffolding only — the Kubernetes and deploy-service
-    clients are still real. A banner implying otherwise would be actively
-    dangerous, since an operator could believe a drain was safe to run."""
+def test_the_warning_names_what_is_still_real(caplog):
+    """The banner must describe what is *actually* stubbed at any given point.
+
+    T8 shipped scaffolding only and said so; T10 stubbed the Kubernetes client
+    and the banner was updated to match, leaving the deploy-service client as
+    the remaining caveat until T9. A banner claiming more safety than exists is
+    actively dangerous — an operator could believe a drain was safe to run — so
+    this test exists to go red whenever the wording outlives the truth. Update
+    it deliberately alongside the banner; do not delete it.
+    """
     from app.main import _guard_dry_run
 
     with caplog.at_level("WARNING"):
         _guard_dry_run(Settings(APP_ENV="dev", DRY_RUN_MODE=True))
 
-    assert "not stubbed yet" in caplog.text
+    assert "deploy-service client is still REAL" in caplog.text
+
+
+def test_the_warning_states_no_cluster_is_contacted(caplog):
+    """The reassurance that T10 actually earned."""
+    from app.main import _guard_dry_run
+
+    with caplog.at_level("WARNING"):
+        _guard_dry_run(Settings(APP_ENV="dev", DRY_RUN_MODE=True))
+
+    assert "No cluster is contacted" in caplog.text
 
 
 def test_no_warning_when_dry_run_is_off(caplog):

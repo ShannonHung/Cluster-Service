@@ -126,7 +126,23 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 
 `DRY_RUN_MODE=true` is a **deployment-level** switch that lets an e2e pipeline exercise the real HTTP surface without real side effects. It is shared in design with `deploy-service` — see that repo's `docs/arch/dry-run-mode.md` for the full rationale.
 
-**Current state: scaffolding only.** T8 added the setting, the start-up guard and the response marker. **Nothing is stubbed yet** — the deploy-service client and the Kubernetes client are still real, so a dry-run instance *can still mutate a cluster*. The stubs land in T9 (deploy-service client) and T10 (`CoreV1Api`). The start-up banner says so explicitly; do not remove that caveat until the stubs exist.
+**Current state: the Kubernetes side is stubbed; the deploy-service client is not.** T8 added the setting, the start-up guard and the response marker; T10 added the fake `CoreV1Api` and cluster repository, so no cluster is contacted and no kubeconfig is read. The deploy-service client is **still real** until T9, so the deploy and command proxy endpoints continue to call upstream. The start-up banner states exactly this — keep it in step with reality, and note that `test_the_warning_names_what_is_still_real` exists to go red when it drifts.
+
+### The Kubernetes seam (T10)
+
+Two things are replaced, both *below* `NodeService`:
+
+- **`_get_cluster_repo`** → `DryRunClusterRepository`. Swapped first because the real repositories resolve a cluster by reading a file from `KUBECONFIG_BASE_PATH`; stubbing only the factory would still demand credentials on disk. Any cluster name resolves.
+- **`KubeClientFactory.get_core_v1`** → `DryRunCoreV1Api`, a fake holding the SDK's own model objects (`V1Node`, `V1Pod`, …) rather than mocks.
+
+`NodeService` itself is untouched, so **all of its business logic still runs**: the uncordon readiness gate (allowlist — only `"Ready"` passes), drain's refuse-before-evict check, the always-skipped pod categories, and the per-node vs cluster-level failure layering in the batch endpoints. Those refusals are the assertions worth having; a router-level short-circuit would answer 200 to every one of them. `tests/integration/test_dry_run_node_routes.py` enforces this — short-circuiting `uncordon` in the router makes the two readiness tests fail.
+
+Two details that are load-bearing rather than cosmetic:
+
+- **Cluster state is mutable and shared per cluster name**, cleared by `reset_dry_run_clusters()`. A cordon must still be in effect on the next request, because that is how a real cluster behaves. Call the reset in any test that mutates state — it is process-global, like `get_settings.cache_clear()`.
+- **Eviction actually removes the pod.** `_wait_for_pods_gone` polls `list_pod_for_all_namespaces` until the targeted pods are gone, with a 25s budget. A fake with a fixed pod list turns every clean drain into a full-budget wait reporting `still_terminating` — a slow false failure. Removing the mutation makes the dry-run suite take ~116s instead of ~13s.
+
+The fake's pod fixture deliberately contains one of each category drain treats differently (evictable, DaemonSet, mirror, completed, unmanaged, emptyDir, plus one on another node). Dropping any of them silently stops exercising a branch.
 
 - Set by environment variable only — never a query param, header or request-body field. A per-request switch would let any caller holding a valid token make a real cordon or drain silently no-op.
 - `create_app()` **raises** when `DRY_RUN_MODE=true` and `APP_ENV=prod`. A hard failure, not a warning: in production a dry-run instance answers 200 to every drain while doing nothing, and nothing alerts.
