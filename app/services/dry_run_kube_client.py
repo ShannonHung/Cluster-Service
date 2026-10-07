@@ -3,11 +3,11 @@ app/services/dry_run_kube_client.py
 
 A stand-in for ``kubernetes.client.CoreV1Api`` used when ``DRY_RUN_MODE=true``.
 
-Why this seam. The node routes run:
+Why this seam. Every Kubernetes route runs, through call_kube in a worker thread:
 
     repo.get_kube_client_config(cluster)   — reads a kubeconfig from disk
     KubeClientFactory().get_core_v1(cfg)   — builds a live CoreV1Api
-    asyncio.to_thread(svc.<op>, kube=...)  — NodeService does the real work
+    svc.<op>(..., kube=kube)               — the service does the real work
 
 Dry-run replaces the first two and leaves the third completely alone, so every
 piece of business logic still executes for real: the uncordon readiness gate,

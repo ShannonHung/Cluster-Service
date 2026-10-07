@@ -19,14 +19,12 @@ All endpoints require the ``cluster_api`` scope.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 
-from app.core.config import get_settings
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_cluster_repo, get_current_user
 from app.domain.kubernetes_models import (
     BatchNodeActionData,
     BatchNodeRequest,
@@ -42,9 +40,7 @@ from app.domain.kubernetes_models import (
 )
 from app.domain.models import ApiResponse, User
 from app.repositories.cluster_repository import ClusterRepository
-from app.repositories.dry_run_cluster_repository import DryRunClusterRepository
-from app.repositories.yaml_cluster_repository import YamlClusterRepository
-from app.services.kube_client import KubeClientFactory
+from app.services.kube_client import call_kube
 from app.services.node_service import NodeService
 
 _logger = logging.getLogger(__name__)
@@ -53,21 +49,6 @@ router = APIRouter(prefix="/clusters", tags=["nodes"])
 
 
 # ── Dependency providers ──────────────────────────────────────────────────────
-
-def _get_cluster_repo() -> ClusterRepository:
-    """Resolve the cluster-config source.
-
-    In dry-run this is swapped *before* any kubeconfig is read: the real
-    repositories resolve a cluster by reading a file from
-    KUBECONFIG_BASE_PATH, so stubbing only the client factory would still
-    demand credentials on disk. A dry-run instance holds none. See
-    app/repositories/dry_run_cluster_repository.py.
-    """
-    settings = get_settings()
-    if settings.DRY_RUN_MODE:
-        return DryRunClusterRepository()
-    return YamlClusterRepository(settings.KUBECONFIG_BASE_PATH)
-
 
 def _get_node_service() -> NodeService:
     return NodeService()
@@ -95,13 +76,17 @@ async def get_node(
     cluster: str,
     node: str,
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
-    repo: ClusterRepository = Depends(_get_cluster_repo),
+    repo: ClusterRepository = Depends(get_cluster_repo),
     svc: NodeService = Depends(_get_node_service),
 ) -> ApiResponse[NodeDetailData]:
-    cfg = repo.get_kube_client_config(cluster)
-    kube = KubeClientFactory().get_core_v1(cfg)
-    data = await asyncio.to_thread(
-        svc.get_node, cluster=cluster, node_name=node, kube=kube,
+    data = await call_kube(
+        repo,
+        cluster,
+        lambda kube: svc.get_node(
+            cluster=cluster,
+            node_name=node,
+            kube=kube,
+        ),
     )
     return ApiResponse(data=data, request_id=_request_id(request))
 
@@ -118,13 +103,17 @@ async def cordon_node(
     cluster: str,
     node: str,
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
-    repo: ClusterRepository = Depends(_get_cluster_repo),
+    repo: ClusterRepository = Depends(get_cluster_repo),
     svc: NodeService = Depends(_get_node_service),
 ) -> ApiResponse[NodeActionData]:
-    cfg = repo.get_kube_client_config(cluster)
-    kube = KubeClientFactory().get_core_v1(cfg)
-    data = await asyncio.to_thread(
-        svc.cordon, cluster=cluster, node_name=node, kube=kube,
+    data = await call_kube(
+        repo,
+        cluster,
+        lambda kube: svc.cordon(
+            cluster=cluster,
+            node_name=node,
+            kube=kube,
+        ),
     )
     return ApiResponse(data=data, request_id=_request_id(request))
 
@@ -150,13 +139,17 @@ async def uncordon_node(
     cluster: str,
     node: str,
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
-    repo: ClusterRepository = Depends(_get_cluster_repo),
+    repo: ClusterRepository = Depends(get_cluster_repo),
     svc: NodeService = Depends(_get_node_service),
 ) -> ApiResponse[NodeActionData]:
-    cfg = repo.get_kube_client_config(cluster)
-    kube = KubeClientFactory().get_core_v1(cfg)
-    data = await asyncio.to_thread(
-        svc.uncordon, cluster=cluster, node_name=node, kube=kube,
+    data = await call_kube(
+        repo,
+        cluster,
+        lambda kube: svc.uncordon(
+            cluster=cluster,
+            node_name=node,
+            kube=kube,
+        ),
     )
     return ApiResponse(data=data, request_id=_request_id(request))
 
@@ -181,7 +174,7 @@ async def cordon_nodes(
     cluster: str,
     body: BatchNodeRequest,
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
-    repo: ClusterRepository = Depends(_get_cluster_repo),
+    repo: ClusterRepository = Depends(get_cluster_repo),
     svc: NodeService = Depends(_get_node_service),
 ) -> ApiResponse[BatchNodeActionData]:
     return await _run_batch(
@@ -218,7 +211,7 @@ async def uncordon_nodes(
     cluster: str,
     body: BatchNodeRequest,
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
-    repo: ClusterRepository = Depends(_get_cluster_repo),
+    repo: ClusterRepository = Depends(get_cluster_repo),
     svc: NodeService = Depends(_get_node_service),
 ) -> ApiResponse[BatchNodeActionData]:
     return await _run_batch(
@@ -245,16 +238,15 @@ async def _run_batch(
     """Shared body for the two batch routes.
 
     NodeService is synchronous (blocking kubernetes client), so the batch runs
-    on a worker thread — otherwise a batch of N nodes would block the event
-    loop for N round-trips and the process would serve no other request,
-    health checks included, while it ran.
+    through call_kube on a worker thread — otherwise a batch of N nodes would
+    block the event loop for N round-trips and the process would serve no
+    other request, health checks included, while it ran.
     """
-    cfg = repo.get_kube_client_config(cluster)
-    kube = KubeClientFactory().get_core_v1(cfg)
     batch = svc.cordon_many if action == "cordon" else svc.uncordon_many
-
-    data = await asyncio.to_thread(
-        batch, cluster=cluster, node_names=body.nodes, kube=kube,
+    data = await call_kube(
+        repo,
+        cluster,
+        lambda kube: batch(cluster=cluster, node_names=body.nodes, kube=kube),
     )
 
     failed = [r.node for r in data.results if r.status == "failed"]
@@ -292,7 +284,7 @@ async def drain_node(
     node: str,
     body: DrainRequest = DrainRequest(),
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))] = None,
-    repo: ClusterRepository = Depends(_get_cluster_repo),
+    repo: ClusterRepository = Depends(get_cluster_repo),
     svc: NodeService = Depends(_get_node_service),
 ) -> ApiResponse[DrainActionData]:
     _logger.info(
@@ -309,10 +301,15 @@ async def drain_node(
 
     # The drain wait budget is server-owned (DRAIN_DEFAULT_TIMEOUT_SECONDS) and
     # resolved inside the service — the client cannot set a per-request timeout.
-    cfg = repo.get_kube_client_config(cluster)
-    kube = KubeClientFactory().get_core_v1(cfg)
-    data = await asyncio.to_thread(
-        svc.drain, cluster=cluster, node_name=node, kube=kube, options=body.options,
+    data = await call_kube(
+        repo,
+        cluster,
+        lambda kube: svc.drain(
+            cluster=cluster,
+            node_name=node,
+            kube=kube,
+            options=body.options,
+        ),
     )
     return ApiResponse(data=data, request_id=_request_id(request))
 
@@ -334,18 +331,19 @@ async def patch_node_labels(
     node: str,
     body: NodePatchRequest = NodePatchRequest(),
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))] = None,
-    repo: ClusterRepository = Depends(_get_cluster_repo),
+    repo: ClusterRepository = Depends(get_cluster_repo),
     svc: NodeService = Depends(_get_node_service),
 ) -> ApiResponse[NodeLabelsData]:
-    cfg = repo.get_kube_client_config(cluster)
-    kube = KubeClientFactory().get_core_v1(cfg)
-    data = await asyncio.to_thread(
-        svc.label_node,
-        cluster=cluster,
-        node_name=node,
-        kube=kube,
-        set_labels=body.set,
-        remove_labels=body.remove,
+    data = await call_kube(
+        repo,
+        cluster,
+        lambda kube: svc.label_node(
+            cluster=cluster,
+            node_name=node,
+            kube=kube,
+            set_labels=body.set,
+            remove_labels=body.remove,
+        ),
     )
     return ApiResponse(data=data, request_id=_request_id(request))
 
@@ -367,18 +365,19 @@ async def patch_node_annotations(
     node: str,
     body: NodePatchRequest = NodePatchRequest(),
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))] = None,
-    repo: ClusterRepository = Depends(_get_cluster_repo),
+    repo: ClusterRepository = Depends(get_cluster_repo),
     svc: NodeService = Depends(_get_node_service),
 ) -> ApiResponse[NodeAnnotationsData]:
-    cfg = repo.get_kube_client_config(cluster)
-    kube = KubeClientFactory().get_core_v1(cfg)
-    data = await asyncio.to_thread(
-        svc.annotate_node,
-        cluster=cluster,
-        node_name=node,
-        kube=kube,
-        set_annotations=body.set,
-        remove_annotations=body.remove,
+    data = await call_kube(
+        repo,
+        cluster,
+        lambda kube: svc.annotate_node(
+            cluster=cluster,
+            node_name=node,
+            kube=kube,
+            set_annotations=body.set,
+            remove_annotations=body.remove,
+        ),
     )
     return ApiResponse(data=data, request_id=_request_id(request))
 
@@ -402,17 +401,18 @@ async def patch_node_taints(
     node: str,
     body: NodeTaintRequest = NodeTaintRequest(),
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))] = None,
-    repo: ClusterRepository = Depends(_get_cluster_repo),
+    repo: ClusterRepository = Depends(get_cluster_repo),
     svc: NodeService = Depends(_get_node_service),
 ) -> ApiResponse[NodeTaintData]:
-    cfg = repo.get_kube_client_config(cluster)
-    kube = KubeClientFactory().get_core_v1(cfg)
-    data = await asyncio.to_thread(
-        svc.taint_node,
-        cluster=cluster,
-        node_name=node,
-        kube=kube,
-        set_taints=body.set,
-        remove_taints=body.remove,
+    data = await call_kube(
+        repo,
+        cluster,
+        lambda kube: svc.taint_node(
+            cluster=cluster,
+            node_name=node,
+            kube=kube,
+            set_taints=body.set,
+            remove_taints=body.remove,
+        ),
     )
     return ApiResponse(data=data, request_id=_request_id(request))
