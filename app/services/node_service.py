@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 
 from kubernetes.client import CoreV1Api, V1Node
 from kubernetes.client.exceptions import ApiException
@@ -63,8 +64,11 @@ _logger = logging.getLogger(__name__)
 _MIRROR_POD_ANNOTATION = "kubernetes.io/config.mirror"
 
 
-def _node_not_found(cluster: str, node_name: str):
-    """The not-found exception for a node, for ``translate_kube_errors``."""
+def _node_not_found(
+    cluster: str, node_name: str
+) -> Callable[[], NodeNotFoundException]:
+    """Builds the node's not-found exception on demand — the ``not_found``
+    factory ``translate_kube_errors`` calls on a 404."""
     return lambda: NodeNotFoundException(
         f"Node '{node_name}' not found in cluster '{cluster}'.",
     )

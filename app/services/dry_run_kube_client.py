@@ -472,9 +472,9 @@ class DryRunCoreV1Api:
 
 
 def _not_found(what: str):
-    """Build the SDK's own 404, so the services' ``except ApiException`` paths
-    (404 → NodeNotFoundException / ConfigMapNotFoundException) run exactly as
-    in production."""
+    """Build the SDK's own 404, so translate_kube_errors' 404 mapping
+    (→ NodeNotFoundException / ConfigMapNotFoundException) runs exactly as in
+    production."""
     from kubernetes.client.exceptions import ApiException
 
     exc = ApiException(status=404, reason="Not Found")
