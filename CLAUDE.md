@@ -77,7 +77,7 @@ The `/token` OAuth2 endpoint is registered directly on the root app (not on a ve
 - `YamlClusterRepository` — `<cluster>.yaml` files (standard kubeconfig). Cluster name = filename stem.
 - `JsonClusterRepository` — `<cluster>.json` files with `{cluster_name, server, ca (base64 PEM), token}`. For service-account-style credentials when no full kubeconfig is available.
 
-Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) which `KubeClientFactory` consumes. The factory builds a **fresh** `ApiClient` + `Configuration` per call to prevent cross-cluster state pollution under concurrency — do not cache or reuse `CoreV1Api` across requests.
+Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) which `KubeClientFactory` consumes. The factory builds a **fresh** `ApiClient` + `Configuration` per call to prevent cross-cluster state pollution under concurrency — do not cache or reuse `CoreV1Api` across requests. Fresh per request means released per request: `call_kube` calls `KubeClientFactory.release` when the call returns or raises. Note `ApiClient.close()` alone releases nothing — it only shuts the `async_req` thread pool; the sockets are in `rest_client.pool_manager`, which `release` clears. A token-auth CA is written to one temp file per distinct CA and reused (`_ca_file`), never one per request.
 
 **Node operations** (`app/services/node_service.py`):
 - `cordon` / `uncordon` patch `spec.unschedulable` and nothing else. Both delegate to the shared `_patch_unschedulable` helper — keep new schedulability operations on that path rather than issuing their own patch.
