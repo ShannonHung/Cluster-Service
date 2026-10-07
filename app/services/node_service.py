@@ -260,9 +260,15 @@ class NodeService:
         """
         if getattr(exc, "cluster_level", False):
             return True
+        if not isinstance(exc, KubeApiException):
+            # NodeNotFound / NodeNotReady are about one node by construction.
+            return False
         # 401/403 come from the API server, so they arrive untagged — but they
         # are a property of the connection, and will repeat for every node.
-        return getattr(exc, "kube_status", None) in (401, 403)
+        # No status at all means no HTTP response (TLS failure, a request the
+        # SDK could not build): nothing about any one node was learned, and it
+        # repeats identically for every node, like a connection error.
+        return exc.kube_status in (401, 403) or exc.kube_status is None
 
     def _batch_set_unschedulable(
         self,

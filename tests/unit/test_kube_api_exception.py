@@ -37,8 +37,22 @@ def test_an_error_status_is_mirrored(status):
     assert exc.kube_status == status
 
 
-@pytest.mark.parametrize("status", [0, 200, 302])
+def test_status_zero_means_no_response_and_is_kept_as_none():
+    """The SDK's own spelling of "no HTTP response": TLS failures and requests
+    it could not build raise ApiException(status=0). Zero is not a status any
+    API server sent, so it is normalised to None like the missing case."""
+    exc = KubeApiException("SSLError", kube_status=0)
+    assert exc.kube_status is None
+    assert exc.http_status == 502
+
+
+@pytest.mark.parametrize("status", [200, 302])
 def test_a_non_error_status_falls_back_to_502(status):
     exc = KubeApiException("boom", kube_status=status)
     assert exc.http_status == 502
     assert exc.kube_status == status
+
+
+def test_constructed_without_a_status_invents_none():
+    """Configuration failures raised before any request carry no status."""
+    assert KubeApiException("missing token").kube_status is None

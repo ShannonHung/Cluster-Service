@@ -267,6 +267,7 @@ def test_content_read_with_no_status_is_a_502_kube_api_error():
     with pytest.raises(KubeApiException) as exc_info:
         _read(kube)
     assert exc_info.value.http_status == 502
+    assert exc_info.value.kube_status is None
 
 
 def test_network_error_is_a_cluster_level_503():

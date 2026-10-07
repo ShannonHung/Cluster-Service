@@ -343,14 +343,16 @@ class KubeApiException(BaseAppException):
     error_code = ErrorCode.KUBE_API_ERROR
     log_level = logging.ERROR
 
-    def __init__(self, message: str, *, kube_status: int | None = 502, **kwargs) -> None:
+    def __init__(self, message: str, *, kube_status: int | None = None, **kwargs) -> None:
         # Preserve the status the API server actually returned. It can differ
         # from http_status (which floors to 502), and callers rely on the raw
-        # value to tell a retryable 503 from a 403. None means there was no
-        # response to read a status from (the SDK raises ApiException with
-        # status=None on some client-side / proxy failures) — kept as None
-        # rather than invented, since no API server said 502.
-        self.kube_status = kube_status
+        # value to tell a retryable 503 from a 403. None means no HTTP response
+        # at all: the SDK spells that status=0 (TLS failures, a request it
+        # could not build), and a bare ApiException() leaves it None. Both are
+        # normalised to None rather than invented, since no API server said
+        # anything — and NodeService treats a status-less failure as
+        # cluster-level.
+        self.kube_status = kube_status or None
         # Use the Kubernetes API status as our HTTP status when it makes sense;
         # otherwise default to 502 (bad gateway from the K8s control plane).
         self.http_status = kube_status if kube_status is not None and kube_status >= 400 else 502
