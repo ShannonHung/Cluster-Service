@@ -11,7 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.api.v1.nodes import _get_cluster_repo, _get_node_service
+from app.api.v1.nodes import _get_node_service
+from app.core.dependencies import get_cluster_repo
 from app.core.exceptions import NodeNotReadyException
 from app.domain.kubernetes_models import (
     BatchNodeActionData,
@@ -58,11 +59,11 @@ def fake_service():
     )
 
     app.dependency_overrides[_get_node_service] = lambda: svc
-    app.dependency_overrides[_get_cluster_repo] = lambda: MagicMock()
-    with patch("app.api.v1.nodes.KubeClientFactory"):
+    app.dependency_overrides[get_cluster_repo] = lambda: MagicMock()
+    with patch("app.services.kube_client.KubeClientFactory"):
         yield svc
     app.dependency_overrides.pop(_get_node_service, None)
-    app.dependency_overrides.pop(_get_cluster_repo, None)
+    app.dependency_overrides.pop(get_cluster_repo, None)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────

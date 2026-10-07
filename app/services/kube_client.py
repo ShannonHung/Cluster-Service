@@ -14,11 +14,13 @@ cross-cluster state pollution in concurrent requests.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import ssl
 import tempfile
 from pathlib import Path
+from typing import Callable, TypeVar
 
 from kubernetes import client, config as kube_config
 from kubernetes.client import ApiClient, CoreV1Api, Configuration
@@ -26,9 +28,12 @@ from kubernetes.client import ApiClient, CoreV1Api, Configuration
 from app.core.config import get_settings
 from app.core.exceptions import KubeApiException
 from app.domain.kubernetes_models import KubeClientConfig
+from app.repositories.cluster_repository import ClusterRepository
 from app.services.dry_run_kube_client import DryRunCoreV1Api
 
 _logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 class KubeClientFactory:
@@ -145,3 +150,28 @@ class KubeClientFactory:
             cfg.server,
         )
         return ApiClient(configuration=k8s_cfg)
+
+
+async def call_kube(
+    repo: ClusterRepository, cluster: str, op: Callable[[CoreV1Api], T]
+) -> T:
+    """Resolve *cluster*, build a client for it, and run ``op(client)`` — all
+    in a worker thread.
+
+    All three block: resolving credentials reads a kubeconfig and may run an
+    exec credential plugin (EKS / GKE); building the client can write a CA
+    temp file; every SDK call blocks on a urllib3 socket. On the event loop any
+    one of them stalls every other request, health checks included. Routes
+    call this rather than threading the pieces themselves, so none of the
+    three can be left behind (CLAUDE.md, "Never call a Kubernetes service
+    inline from a route").
+
+    A fresh client per call, as ``KubeClientFactory`` requires.
+    """
+
+    def _run() -> T:
+        cfg = repo.get_kube_client_config(cluster)
+        kube = KubeClientFactory().get_core_v1(cfg)
+        return op(kube)
+
+    return await asyncio.to_thread(_run)

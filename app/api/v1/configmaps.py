@@ -15,35 +15,22 @@ separate way in.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 
-from app.core.config import get_settings
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_cluster_repo, get_current_user
 from app.domain.kubernetes_models import ConfigMapDetailData, ConfigMapListData
 from app.domain.models import ApiResponse, User
 from app.repositories.cluster_repository import ClusterRepository
-from app.repositories.dry_run_cluster_repository import DryRunClusterRepository
-from app.repositories.yaml_cluster_repository import YamlClusterRepository
 from app.services.configmap_service import ConfigMapService
-from app.services.kube_client import KubeClientFactory
+from app.services.kube_client import call_kube
 
 router = APIRouter(prefix="/clusters", tags=["configmaps"])
 
 # A Kubernetes namespace name (RFC 1123 label). Rejects "*": on a content read
 # the namespace is part of the ConfigMap's identity, not a filter.
 _NAMESPACE_PATTERN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
-
-
-def _get_cluster_repo() -> ClusterRepository:
-    """Resolve the cluster-config source; dry-run swaps it before any
-    kubeconfig is read (see app/api/v1/pods.py)."""
-    settings = get_settings()
-    if settings.DRY_RUN_MODE:
-        return DryRunClusterRepository()
-    return YamlClusterRepository(settings.KUBECONFIG_BASE_PATH)
 
 
 def _request_id(request: Request) -> str:
@@ -74,22 +61,18 @@ async def list_configmaps(
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
     namespace: str = Query(..., min_length=1, description="Namespace to list from (required; '*' = all)."),
     name: Optional[str] = Query(None, description="Comma-separated name prefixes."),
-    repo: ClusterRepository = Depends(_get_cluster_repo),
+    repo: ClusterRepository = Depends(get_cluster_repo),
 ) -> ApiResponse[ConfigMapListData]:
-    def _list() -> ConfigMapListData:
-        # Credentials and client construction block too — a kubeconfig read, an
-        # exec credential plugin (EKS / GKE), a CA temp file — so they run in
-        # the worker thread with the call itself, not on the event loop.
-        cfg = repo.get_kube_client_config(cluster)
-        kube = KubeClientFactory().get_core_v1(cfg)
-        return ConfigMapService().list_configmaps(
+    data = await call_kube(
+        repo,
+        cluster,
+        lambda kube: ConfigMapService().list_configmaps(
             cluster=cluster,
             namespace=namespace,
             kube=kube,
             name_prefixes=_split_csv(name),
-        )
-
-    data = await asyncio.to_thread(_list)
+        ),
+    )
     return ApiResponse(data=data, request_id=_request_id(request))
 
 
@@ -114,14 +97,13 @@ async def get_configmap(
         User, Depends(get_current_user(["cluster_api", "configmap_read"]))
     ],
     namespace: str = Path(..., pattern=_NAMESPACE_PATTERN, description="Namespace ('*' is not accepted)."),
-    repo: ClusterRepository = Depends(_get_cluster_repo),
+    repo: ClusterRepository = Depends(get_cluster_repo),
 ) -> ApiResponse[ConfigMapDetailData]:
-    def _read() -> ConfigMapDetailData:
-        cfg = repo.get_kube_client_config(cluster)
-        kube = KubeClientFactory().get_core_v1(cfg)
-        return ConfigMapService().get_configmap(
+    data = await call_kube(
+        repo,
+        cluster,
+        lambda kube: ConfigMapService().get_configmap(
             cluster=cluster, namespace=namespace, name=name, kube=kube
-        )
-
-    data = await asyncio.to_thread(_read)
+        ),
+    )
     return ApiResponse(data=data, request_id=_request_id(request))
