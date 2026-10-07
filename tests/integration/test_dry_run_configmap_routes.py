@@ -142,3 +142,119 @@ def test_client_construction_runs_off_the_event_loop(client, headers, monkeypatc
 
     assert resp.status_code == 200
     assert seen == {"repo": False, "factory": False}
+
+
+# ══ content: GET …/namespaces/{namespace}/configmaps/{name} ═══════════════════
+#
+# Needs cluster_api AND configmap_read: configmap_read is a step above cluster
+# access, not a separate way in. test_operator holds cluster_api only.
+
+_CONTENT = "/api/v1/clusters/any-cluster/namespaces/{ns}/configmaps/{name}"
+
+
+def _content_url(ns: str, name: str) -> str:
+    return _CONTENT.format(ns=ns, name=name)
+
+
+@pytest.fixture
+def operator_headers(client) -> dict[str, str]:
+    resp = client.post("/token", data={"username": "test_operator", "password": "secret"})
+    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
+
+
+def _read(client, headers, ns: str, name: str) -> dict:
+    resp = client.get(_content_url(ns, name), headers=headers)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["data"]
+
+
+def test_reads_values_and_binary_data(client, headers):
+    data = _read(client, headers, "default", "dry-run-binary")
+    assert data["name"] == "dry-run-binary"
+    assert data["namespace"] == "default"
+    assert data["data"] == {"README": "see cert.der"}
+    assert data["binary_data"] == {"cert.der": "AAEC"}
+    assert data["labels"] == {"dry-run": "true"}
+    assert data["creation_timestamp"].startswith("2000-01-01")
+
+
+def test_last_applied_is_stripped_and_other_annotations_survive(client, headers):
+    data = _read(client, headers, "default", "dry-run-applied")
+    assert data["annotations"] == {"meta.helm.sh/release-name": "dry-run-release"}
+    assert data["data"] == {"LOG_LEVEL": "warn"}
+
+
+def test_the_stale_last_applied_value_appears_nowhere(client, headers):
+    """last-applied says LOG_LEVEL=info while data says warn; only the current
+    value may reach the caller."""
+    body = client.get(_content_url("default", "dry-run-applied"), headers=headers).text
+    assert '"info"' not in body
+    assert "last-applied-configuration" not in body
+    assert "managed" not in body.lower()
+
+
+def test_same_name_in_two_namespaces_reads_each_ones_own_values(client, headers):
+    assert _read(client, headers, "default", "dry-run-shared")["data"] == {"TEAM": "default"}
+    assert _read(client, headers, "apps", "dry-run-shared")["data"] == {"TEAM": "apps"}
+
+
+@pytest.mark.parametrize(
+    "ns, name",
+    [("default", "no-such-configmap"), ("no-such-namespace", "dry-run-app-config")],
+)
+def test_missing_configmap_or_namespace_is_404_naming_both(client, headers, ns, name):
+    resp = client.get(_content_url(ns, name), headers=headers)
+    assert resp.status_code == 404
+    error = resp.json()["error"]
+    assert error["code"] == "CONFIGMAP_NOT_FOUND"
+    assert ns in error["message"] and name in error["message"]
+
+
+def test_wildcard_namespace_is_rejected(client, headers):
+    """The namespace is part of a ConfigMap's identity, not a filter."""
+    resp = client.get(_content_url("*", "dry-run-shared"), headers=headers)
+    assert resp.status_code == 422
+
+
+def test_cluster_api_alone_can_list_but_not_read(client, operator_headers):
+    listing = client.get(_URL, headers=operator_headers, params={"namespace": "*"})
+    assert listing.status_code == 200
+
+    resp = client.get(_content_url("default", "dry-run-app-config"), headers=operator_headers)
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "FORBIDDEN"
+
+
+def test_a_missing_configmap_is_403_not_404_without_the_scope(client, operator_headers):
+    """The scope check runs first, so a caller without configmap_read cannot
+    probe which ConfigMaps exist by telling 404 from 403."""
+    resp = client.get(_content_url("default", "no-such-configmap"), headers=operator_headers)
+    assert resp.status_code == 403
+
+
+def test_content_read_runs_client_construction_off_the_event_loop(client, headers, monkeypatch):
+    from app.api.v1 import configmaps
+    from app.repositories.dry_run_cluster_repository import DryRunClusterRepository
+    from app.services.kube_client import KubeClientFactory
+
+    seen: dict[str, bool] = {}
+
+    class RecordingRepo(DryRunClusterRepository):
+        def get_kube_client_config(self, cluster):
+            seen["repo"] = _on_event_loop()
+            return super().get_kube_client_config(cluster)
+
+    class RecordingFactory(KubeClientFactory):
+        def get_core_v1(self, cfg):
+            seen["factory"] = _on_event_loop()
+            return super().get_core_v1(cfg)
+
+    client.app.dependency_overrides[configmaps._get_cluster_repo] = RecordingRepo
+    monkeypatch.setattr(configmaps, "KubeClientFactory", RecordingFactory)
+    try:
+        resp = client.get(_content_url("default", "dry-run-app-config"), headers=headers)
+    finally:
+        client.app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert seen == {"repo": False, "factory": False}

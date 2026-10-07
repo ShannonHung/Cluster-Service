@@ -71,6 +71,7 @@ class ErrorCode(StrEnum):
     KUBE_API_ERROR             = "KUBE_API_ERROR"
     DRAIN_BLOCKED              = "DRAIN_BLOCKED"
     NODE_NOT_READY             = "NODE_NOT_READY"
+    CONFIGMAP_NOT_FOUND        = "CONFIGMAP_NOT_FOUND"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -276,6 +277,19 @@ class NodeNotFoundException(BaseAppException):
 
     http_status = 404
     error_code = ErrorCode.NODE_NOT_FOUND
+    log_level = logging.INFO
+
+
+class ConfigMapNotFoundException(BaseAppException):
+    """Raised when a ConfigMap cannot be read because it does not exist.
+
+    The API server answers 404 for a missing namespace and a missing ConfigMap
+    alike, and telling them apart would need read access to namespaces, so the
+    message names both and leaves the caller to check which.
+    """
+
+    http_status = 404
+    error_code = ErrorCode.CONFIGMAP_NOT_FOUND
     log_level = logging.INFO
 
 

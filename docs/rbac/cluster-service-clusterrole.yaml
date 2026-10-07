@@ -58,10 +58,11 @@ rules:
     resources: ["pods/eviction"]
     verbs: ["create"]
 
+  # get  — GET /clusters/{cluster}/namespaces/{namespace}/configmaps/{name}
   # list — GET /clusters/{cluster}/configmaps
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["list"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
