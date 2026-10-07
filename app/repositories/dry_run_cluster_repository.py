@@ -32,7 +32,7 @@ _logger = logging.getLogger(__name__)
 # would fail loudly instead of reaching something.
 _DRY_RUN_SERVER = "https://dry-run.invalid:6443"
 
-_DRY_RUN_CLUSTERS = ("dry-run-cluster", "dry-run-cluster-2")
+DRY_RUN_CLUSTERS = ("dry-run-cluster", "dry-run-cluster-2")
 
 
 class DryRunClusterRepository(ClusterRepository):
@@ -73,4 +73,4 @@ class DryRunClusterRepository(ClusterRepository):
         _logger.warning(
             "DRY-RUN | op=cluster.list_clusters | no filesystem was read"
         )
-        return [ClusterInfo(name=name, source="json") for name in _DRY_RUN_CLUSTERS]
+        return [ClusterInfo(name=name, source="json") for name in DRY_RUN_CLUSTERS]

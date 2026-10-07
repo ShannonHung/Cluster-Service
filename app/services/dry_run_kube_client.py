@@ -84,6 +84,9 @@ _NODE_READINESS = {
     _UNKNOWN_NODE: "Unknown",
 }
 
+# Public so the dry-run inventory fake can answer for the same node names.
+DRY_RUN_NODES = tuple(_NODE_READINESS)
+
 
 def _system_info() -> V1NodeSystemInfo:
     """V1NodeSystemInfo requires every field, so build it in one place."""

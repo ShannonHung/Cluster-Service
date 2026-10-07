@@ -126,7 +126,7 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 
 `DRY_RUN_MODE=true` is a **deployment-level** switch that lets an e2e pipeline exercise the real HTTP surface without real side effects. It is shared in design with `deploy-service` — see that repo's `docs/arch/dry-run-mode.md` for the full rationale.
 
-**Current state: the Kubernetes side is stubbed; the deploy-service client is not.** T8 added the setting, the start-up guard and the response marker; T10 added the fake `CoreV1Api` and cluster repository, so no cluster is contacted and no kubeconfig is read. The deploy-service client is **still real** until T9, so the deploy and command proxy endpoints continue to call upstream. The start-up banner states exactly this — keep it in step with reality, and note that `test_the_warning_names_what_is_still_real` exists to go red when it drifts.
+**Current state: both sides are stubbed.** T8 added the setting, the start-up guard and the response marker; T10 added the fake `CoreV1Api` and cluster repository, so no cluster is contacted and no kubeconfig is read; T9 added the deploy-service fakes, so no deploy-service call is made and no deploy-service token is fetched. The start-up banner states exactly this — keep it in step with reality, and note that `test_the_warning_names_what_is_still_real` exists to go red when it drifts.
 
 ### The Kubernetes seam (T10)
 
@@ -143,6 +143,20 @@ Two details that are load-bearing rather than cosmetic:
 - **Eviction actually removes the pod.** `_wait_for_pods_gone` polls `list_pod_for_all_namespaces` until the targeted pods are gone, with a 25s budget. A fake with a fixed pod list turns every clean drain into a full-budget wait reporting `still_terminating` — a slow false failure. Removing the mutation makes the dry-run suite take ~116s instead of ~13s.
 
 The fake's pod fixture deliberately contains one of each category drain treats differently (evictable, DaemonSet, mirror, completed, unmanaged, emptyDir, plus one on another node). Dropping any of them silently stops exercising a branch.
+
+### The deploy-service seam (T9)
+
+The three proxy factories — `_get_pipeline_service`, `_get_command_service`, `_get_inventory_service` — are the only construction points, so they are the seam; `PipelineService`, `CommandService` and `InventoryProxyService` are untouched.
+
+- **`DeployServiceClient`** → `DryRunDeployServiceClient` (pipelines *and* inventory — both live on the real client). **`CommandServiceClient`** → `DryRunCommandServiceClient`; the command proxy has its own client, so it needs its own fake.
+- **Not subclasses.** Inheriting would make any method the fake forgot to override fall through to real HTTP. `tests/unit/test_dry_run_deploy_clients.py` compares public signatures method by method instead — add a method to a real client and that test goes red until the fake has it too.
+- **No token manager.** In dry-run the factories never call `get_deploy_token_manager()`, so the singleton is not even constructed, `DEPLOY_SERVICE_PASSWORD` is not needed and upstream `/token` is never hit. This is why the factories call it inside the live branch rather than taking it via `Depends`.
+- **Errors go through the real adapter.** Where deploy-service would refuse (unknown pipeline, duplicate running pipeline, non-whitelisted command, unknown inventory node, `?format=json` on a text command, killing a non-killable command) the fakes raise `DeployServiceError` from a deploy-service-shaped body, so `_DEPLOY_CODE_MAP` / `_DEPLOY_STATUS_MAP` and the inventory 404 translation stay live. Don't replace those with direct `NotFoundException`s.
+- **Lifecycle**: a pipeline or command is `running` when created and `success` from its first observation (status poll; for commands, a result *or* trace poll — the HTML viewer only polls the trace). State is process-global; clear it with `reset_dry_run_deploy_service()` / `reset_dry_run_command_service()`.
+- **Fixtures**: commands `dry_run_ansible_ping` (text, killable, logged) and `dry_run_ansible_facts` (json, not killable, not logged) — one of each shape a caller branches on. Inventory answers for the same node names as `DryRunCoreV1Api` and the cluster names of `DryRunClusterRepository`.
+- Identifiers are synthetic: pipeline ids ≥ 9,990,000,001, `dry-run-` command ids, `.invalid` URLs, TEST-NET-1 (`192.0.2.x`) addresses.
+
+### Invariants
 
 - Set by environment variable only — never a query param, header or request-body field. A per-request switch would let any caller holding a valid token make a real cordon or drain silently no-op.
 - `create_app()` **raises** when `DRY_RUN_MODE=true` and `APP_ENV=prod`. A hard failure, not a warning: in production a dry-run instance answers 200 to every drain while doing nothing, and nothing alerts.

@@ -21,13 +21,13 @@ from fastapi.responses import HTMLResponse
 
 from app.api.v1.deploy import get_deploy_token_manager
 from app.clients.command_service_client import CommandServiceClient
+from app.clients.dry_run_command_service_client import DryRunCommandServiceClient
 from app.core.config import get_settings
 from app.core.dependencies import (
     get_current_user,
     get_current_user_cookie_or_header,
 )
 from app.core.log_viewer_template import LOG_VIEWER_HTML
-from app.core.token_manager import DeployServiceTokenManager
 from app.domain.command_models import (
     CommandExecutionRequest,
     CommandExecutionResponse,
@@ -42,17 +42,21 @@ from app.services.command_service import CommandService
 router = APIRouter(prefix="/command", tags=["command"])
 
 
-def _get_command_service(
-    token_manager: DeployServiceTokenManager = Depends(get_deploy_token_manager),
-) -> CommandService:
+def _get_command_service() -> CommandService:
     """Build a CommandService backed by a live CommandServiceClient.
 
     Reuses the shared deploy-service token manager singleton (same upstream
-    identity as the pipeline proxy)."""
+    identity as the pipeline proxy).
+
+    In dry-run the client is swapped for an in-memory stand-in and the token
+    manager is never touched. CommandService itself is unchanged. See
+    app/clients/dry_run_command_service_client.py."""
     settings = get_settings()
+    if settings.DRY_RUN_MODE:
+        return CommandService(DryRunCommandServiceClient())  # type: ignore[arg-type]
     client = CommandServiceClient(
         base_url=settings.DEPLOY_SERVICE_URL,
-        token_manager=token_manager,
+        token_manager=get_deploy_token_manager(),
     )
     return CommandService(client)
 

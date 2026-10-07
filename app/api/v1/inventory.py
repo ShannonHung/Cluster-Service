@@ -19,9 +19,9 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from app.api.v1.deploy import get_deploy_token_manager
 from app.clients.deploy_service_client import DeployServiceClient
+from app.clients.dry_run_deploy_service_client import DryRunDeployServiceClient
 from app.core.config import get_settings
 from app.core.dependencies import get_current_user
-from app.core.token_manager import DeployServiceTokenManager
 from app.domain.inventory_models import (
     BastionMapping,
     ClusterBastionResolution,
@@ -36,14 +36,19 @@ _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/inventory", tags=["inventory"])
 
 
-def _get_inventory_service(
-    token_manager: DeployServiceTokenManager = Depends(get_deploy_token_manager),
-) -> InventoryProxyService:
-    """Build InventoryProxyService backed by a live DeployServiceClient."""
+def _get_inventory_service() -> InventoryProxyService:
+    """Build InventoryProxyService backed by a live DeployServiceClient.
+
+    In dry-run the client is the same in-memory stand-in the deploy proxy
+    uses (inventory calls live on DeployServiceClient too); no token is
+    fetched. See app/clients/dry_run_deploy_service_client.py.
+    """
     settings = get_settings()
+    if settings.DRY_RUN_MODE:
+        return InventoryProxyService(DryRunDeployServiceClient())  # type: ignore[arg-type]
     client = DeployServiceClient(
         base_url=settings.DEPLOY_SERVICE_URL,
-        token_manager=token_manager,
+        token_manager=get_deploy_token_manager(),
     )
     return InventoryProxyService(client)
 

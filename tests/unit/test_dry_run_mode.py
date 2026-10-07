@@ -4,11 +4,10 @@ tests/unit/test_dry_run_mode.py
 T8: the dry-run scaffolding — the setting, the production start-up refusal, and
 the response marker.
 
-Deliberately behaviour-free. Enabling DRY_RUN_MODE today changes nothing except
-the marker and a warning log: the deploy-service client and the Kubernetes
-client are still real, and the stubs arrive in T9 / T10. Keeping the scaffolding
-in its own ticket means the guard and the marker are in place and tested
-*before* anything starts depending on them.
+Deliberately behaviour-free: these cover the guard and the marker only. The
+stubs that make dry-run do something (T10: Kubernetes, T9: deploy-service) are
+tested in their own files. Keeping the scaffolding in its own ticket meant the
+guard and the marker were in place and tested *before* anything depended on them.
 
 Design shared with deploy-service; see that repo's docs/arch/dry-run-mode.md.
 """
@@ -99,18 +98,20 @@ def test_the_warning_names_what_is_still_real(caplog):
     """The banner must describe what is *actually* stubbed at any given point.
 
     T8 shipped scaffolding only and said so; T10 stubbed the Kubernetes client
-    and the banner was updated to match, leaving the deploy-service client as
-    the remaining caveat until T9. A banner claiming more safety than exists is
-    actively dangerous — an operator could believe a drain was safe to run — so
-    this test exists to go red whenever the wording outlives the truth. Update
-    it deliberately alongside the banner; do not delete it.
+    and T9 the deploy-service client, and the banner was updated each time.
+    With both stubbed nothing is left to caveat, so the old "still REAL" line
+    must be gone. A banner claiming more safety than exists is actively
+    dangerous — an operator could believe a drain was safe to run — so this
+    test exists to go red whenever the wording outlives the truth. Update it
+    deliberately alongside the banner; do not delete it.
     """
     from app.main import _guard_dry_run
 
     with caplog.at_level("WARNING"):
         _guard_dry_run(Settings(APP_ENV="dev", DRY_RUN_MODE=True))
 
-    assert "deploy-service client is still REAL" in caplog.text
+    assert "still REAL" not in caplog.text
+    assert "No deploy-service call is made" in caplog.text
 
 
 def test_the_warning_states_no_cluster_is_contacted(caplog):

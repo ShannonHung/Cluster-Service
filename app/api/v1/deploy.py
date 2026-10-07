@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 
 from app.clients.deploy_service_client import DeployServiceClient
+from app.clients.dry_run_deploy_service_client import DryRunDeployServiceClient
 from app.core.config import get_settings
 from app.core.dependencies import get_current_user
 from app.core.token_manager import DeployServiceTokenManager
@@ -48,14 +49,20 @@ def get_deploy_token_manager() -> DeployServiceTokenManager:
         )
     return _deploy_token_manager
 
-def _get_pipeline_service(
-    token_manager: DeployServiceTokenManager = Depends(get_deploy_token_manager)
-) -> PipelineService:
-    """Build PipelineService backed by a live DeployServiceClient."""
+def _get_pipeline_service() -> PipelineService:
+    """Build PipelineService backed by a live DeployServiceClient.
+
+    In dry-run the client is swapped for an in-memory stand-in and the token
+    manager singleton is never touched, so no token is fetched and no upstream
+    is needed. PipelineService itself is unchanged. See
+    app/clients/dry_run_deploy_service_client.py.
+    """
     settings = get_settings()
+    if settings.DRY_RUN_MODE:
+        return PipelineService(DryRunDeployServiceClient())  # type: ignore[arg-type]
     client = DeployServiceClient(
         base_url=settings.DEPLOY_SERVICE_URL,
-        token_manager=token_manager,
+        token_manager=get_deploy_token_manager(),
     )
     return PipelineService(client)
 
