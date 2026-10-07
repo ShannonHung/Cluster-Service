@@ -11,6 +11,7 @@ Requires the ``cluster_api`` scope.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Annotated, Optional
 
@@ -79,14 +80,20 @@ async def list_pods(
     pod_name: Optional[str] = Query(None, description="Comma-separated name prefixes."),
     repo: ClusterRepository = Depends(_get_cluster_repo),
 ) -> ApiResponse[PodListData]:
-    cfg = repo.get_kube_client_config(cluster)
-    kube = KubeClientFactory().get_core_v1(cfg)
-    data = NodeService().list_pods(
-        cluster=cluster,
-        namespace=namespace,
-        kube=kube,
-        nodes=_split_csv(node),
-        statuses=_split_csv(status),
-        name_prefixes=_split_csv(pod_name),
-    )
+    def _list() -> PodListData:
+        # Credentials, client construction and the call all block; run them
+        # together off the event loop (CLAUDE.md, "Never call a Kubernetes
+        # service inline from a route").
+        cfg = repo.get_kube_client_config(cluster)
+        kube = KubeClientFactory().get_core_v1(cfg)
+        return NodeService().list_pods(
+            cluster=cluster,
+            namespace=namespace,
+            kube=kube,
+            nodes=_split_csv(node),
+            statuses=_split_csv(status),
+            name_prefixes=_split_csv(pod_name),
+        )
+
+    data = await asyncio.to_thread(_list)
     return ApiResponse(data=data, request_id=_request_id(request))
