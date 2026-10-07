@@ -71,3 +71,23 @@ collected into the batch's results, letting the other nodes proceed.
 node (unreachable API server, dead credentials). Propagated as a single error,
 because reporting it per node would claim N machines are broken when the real
 answer is one.
+
+## Configuration resources
+
+**ConfigMap** — Non-secret configuration stored in a namespace. Identified by
+namespace *and* name together: the same name in two namespaces is two different
+ConfigMaps, so a ConfigMap is never addressed by name alone.
+
+**ConfigMap listing** — Says *which* ConfigMaps exist and what shape they have
+(names, keys, labels) — never a value. Seeing that a ConfigMap exists is a
+lower privilege than seeing what it says.
+
+**ConfigMap content** — The values themselves, for one ConfigMap at a time.
+A separate, higher privilege than listing. Annotations that carry a copy of the
+values (an earlier applied version) are not content: they may disagree with
+the current values, so they are left out rather than shown as a second truth.
+
+**Secret** — Deliberately **not** readable through this service. Not "a
+ConfigMap with a different kind": its exposure risk is of a different order, so
+any future need to read Secrets is a separate design, not an extension of
+ConfigMap reading.

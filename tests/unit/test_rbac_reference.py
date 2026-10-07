@@ -40,6 +40,8 @@ _PERMISSIONS: dict[str, tuple[str, str]] = {
     "list_namespaced_pod": ("pods", "list"),
     "delete_namespaced_pod": ("pods", "delete"),
     "create_namespaced_pod_eviction": ("pods/eviction", "create"),
+    "list_namespaced_config_map": ("configmaps", "list"),
+    "list_config_map_for_all_namespaces": ("configmaps", "list"),
 }
 
 _CORE_V1_METHODS = {name for name in dir(CoreV1Api) if not name.startswith("_")}

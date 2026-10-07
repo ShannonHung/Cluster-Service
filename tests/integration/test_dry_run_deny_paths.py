@@ -115,6 +115,7 @@ _PROTECTED = [
     ("post", f"{_NODES}/{_READY}/drain"),
     ("post", f"{_CLUSTER}/nodes:uncordon"),
     ("get", f"{_CLUSTER}/pods"),
+    ("get", f"{_CLUSTER}/configmaps"),
     ("post", "/api/v1/deploy"),
     ("get", "/api/v1/deploy/1"),
     ("get", "/api/v1/command/info"),
@@ -147,6 +148,7 @@ def test_garbage_token_is_401(dry, method, path):
         ("post", f"{_NODES}/{_READY}/uncordon"),
         ("post", f"{_NODES}/{_READY}/drain"),
         ("post", f"{_CLUSTER}/nodes:cordon"),
+        ("get", f"{_CLUSTER}/configmaps?namespace=*"),
     ],
 )
 def test_missing_cluster_api_is_403(dry, method, path):

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `cluster-service` is one of two FastAPI sub-projects under `antigravity-fastapi/` (the other is `deploy-service/`). This service has three responsibilities:
 
-1. **Kubernetes cluster operations** — list clusters, list/get nodes, cordon, uncordon, drain, label, annotate. Talks directly to multiple Kubernetes clusters via the `kubernetes` SDK.
+1. **Kubernetes cluster operations** — list clusters, list/get nodes, cordon, uncordon, drain, label, annotate, list pods, list ConfigMaps. Talks directly to multiple Kubernetes clusters via the `kubernetes` SDK.
 2. **Deploy-service proxy** — trigger / cancel / retry / status GitLab pipelines by forwarding to `deploy-service` over HTTP with managed bearer-token auth.
 3. **Command-execution proxy** — list available commands, run them, poll results, view live logs, and kill running commands by forwarding to `deploy-service`'s SSH command API over HTTP. The upstream identity (`cluster_proxy`) is restricted by deploy-service's per-user whitelist to **ansible commands only**.
 
@@ -109,7 +109,7 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 - Batch size is capped at 100 by the Pydantic request model, so the bound is visible in the OpenAPI schema and an oversized batch is a 422 before any work starts.
 - Like every other node route, these run the service call through **`asyncio.to_thread`** — see below.
 
-**Never call a Kubernetes service inline from a route.** `NodeService` is synchronous — the `kubernetes` SDK blocks on urllib3 sockets — so calling it directly from an `async def` handler holds the single event-loop thread for the whole operation, and the process answers nothing meanwhile, health checks included. Every node route therefore wraps its service call in `await asyncio.to_thread(svc.method, ...)`. This matters most for `drain`, whose wait budget is 25s (`DRAIN_DEFAULT_TIMEOUT_SECONDS`) and whose poll loop sleeps between attempts: inline, one drain could freeze the pod long enough for a liveness probe to restart it. Note the worker pool is bounded (FastAPI defaults to 40 threads), so this converts "everything freezes" into "long operations queue past 40 concurrent" — better, but not unbounded.
+**Never call a Kubernetes service inline from a route.** `NodeService` and `ConfigMapService` are synchronous — the `kubernetes` SDK blocks on urllib3 sockets — so calling it directly from an `async def` handler holds the single event-loop thread for the whole operation, and the process answers nothing meanwhile, health checks included. Every Kubernetes route therefore wraps its service call in `await asyncio.to_thread(svc.method, ...)` — except the pod listing in `pods.py`, which predates the rule and still calls inline. Resolving credentials and building the client block too (a kubeconfig read, possibly an exec credential plugin for EKS / GKE, a CA temp file), so new routes put `get_kube_client_config` and `get_core_v1` inside the same threaded call — see `app/api/v1/configmaps.py`; the older routes still run them on the event loop. This matters most for `drain`, whose wait budget is 25s (`DRAIN_DEFAULT_TIMEOUT_SECONDS`) and whose poll loop sleeps between attempts: inline, one drain could freeze the pod long enough for a liveness probe to restart it. Note the worker pool is bounded (FastAPI defaults to 40 threads), so this converts "everything freezes" into "long operations queue past 40 concurrent" — better, but not unbounded.
 
 **App factory** (`app/main.py`): `create_app()` returns the FastAPI instance; the module-level `app = create_app()` line is what uvicorn targets. Swagger UI / ReDoc routes are only registered when `DEBUG=true` and serve from `app/static/docs-assets/` for offline use.
 
@@ -120,7 +120,7 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 3. For Kubernetes endpoints: depend on `_get_cluster_repo` → `repo.get_kube_client_config(cluster)` → `KubeClientFactory().get_core_v1(cfg)`, then pass the `CoreV1Api` into the service. **Do not import the `kubernetes` SDK from a router.**
 4. Mount the router in `app/api/router.py`.
 5. Add the scope to the relevant entries in `data/users.json`.
-6. Wrap the service call in `await asyncio.to_thread(...)` — see **Never call a Kubernetes service inline from a route** above.
+6. Wrap the service call — together with `get_kube_client_config` and `get_core_v1` — in `await asyncio.to_thread(...)` — see **Never call a Kubernetes service inline from a route** above.
 7. If the endpoint acts on many resources at once, follow the **Batch endpoints** conventions above — colon-suffix route, always-200 partial-success envelope, and a size cap on the request model.
 8. If it calls a `CoreV1Api` method not used before, map it in `_PERMISSIONS` in `tests/unit/test_rbac_reference.py`, grant it in `docs/rbac/cluster-service-clusterrole.yaml` (comment which endpoint needs it), and add a row to the README's **Kubernetes Permissions** table. Local k3d runs on an admin kubeconfig, so that test is the only thing that notices a missing grant before production returns 403 — and it covers `CoreV1Api` only; using another API class (`AppsV1Api`, …) means extending the test first.
 
@@ -153,7 +153,7 @@ Only the outermost side-effecting collaborators are replaced. Everything a calle
 
 ### The Kubernetes seam (T10)
 
-Two things are replaced, both *below* `NodeService`:
+Two things are replaced, both *below* the services (`NodeService`, `ConfigMapService`):
 
 - **`_get_cluster_repo`** → `DryRunClusterRepository`. Swapped first because the real repositories resolve a cluster by reading a file from `KUBECONFIG_BASE_PATH`; stubbing only the factory would still demand credentials on disk. Any cluster name resolves.
 - **`KubeClientFactory.get_core_v1`** → `DryRunCoreV1Api`, a fake holding the SDK's own model objects (`V1Node`, `V1Pod`, …) rather than mocks.
@@ -166,6 +166,8 @@ Two details that are load-bearing rather than cosmetic:
 - **Eviction actually removes the pod.** `_wait_for_pods_gone` polls `list_pod_for_all_namespaces` until the targeted pods are gone, with a 25s budget. A fake with a fixed pod list turns every clean drain into a full-budget wait reporting `still_terminating` — a slow false failure. Removing the mutation makes the dry-run suite take ~116s instead of ~13s.
 
 The fake's pod fixture deliberately contains one of each category drain treats differently (evictable, DaemonSet, mirror, completed, unmanaged, emptyDir, plus one on another node). Dropping any of them silently stops exercising a branch.
+
+The ConfigMap fixture follows the same rule — one of each shape a caller branches on: data only, with `binaryData`, carrying `last-applied-configuration` (plus a second annotation, so stripping one is distinguishable from dropping all), and the same name in two namespaces. ConfigMaps are read-only, so unlike nodes and pods they are rebuilt on every call rather than held in mutable cluster state.
 
 ### The deploy-service seam (T9)
 

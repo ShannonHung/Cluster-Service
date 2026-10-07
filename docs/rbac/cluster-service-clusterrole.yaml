@@ -11,8 +11,8 @@
 # production. tests/unit/test_rbac_reference.py fails when this file and the
 # Kubernetes calls in app/services disagree, in either direction.
 #
-# A ClusterRole, not a namespaced Role: nodes are cluster-scoped, and pod
-# listing accepts namespace="*".
+# A ClusterRole, not a namespaced Role: nodes are cluster-scoped, and the pod
+# and ConfigMap listings accept namespace="*".
 #
 # The `antigravity` namespace is a placeholder — put the ServiceAccount wherever
 # suits the managed cluster, and change it in both places below.
@@ -57,6 +57,11 @@ rules:
   - apiGroups: [""]
     resources: ["pods/eviction"]
     verbs: ["create"]
+
+  # list — GET /clusters/{cluster}/configmaps
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -56,26 +56,12 @@ from app.domain.kubernetes_models import (
     TaintRemoveSpec,
     TaintSpec,
 )
+from app.services.kube_errors import connection_error
 
 _logger = logging.getLogger(__name__)
 
 # Annotation that identifies mirror / static pods — not evictable.
 _MIRROR_POD_ANNOTATION = "kubernetes.io/config.mirror"
-
-
-def _connection_error(cluster: str, exc: Urllib3HTTPError) -> KubeApiException:
-    """Convert a urllib3 network error to a KubeApiException(503).
-
-    Tagged ``cluster_level`` so batch operations can tell an unreachable
-    cluster apart from a per-node failure and propagate it instead of
-    reporting it once per node.
-    """
-    err = KubeApiException(
-        f"Cannot reach cluster '{cluster}': {exc}",
-        kube_status=503,
-    )
-    err.cluster_level = True
-    return err
 
 
 class NodeService:
@@ -97,7 +83,7 @@ class NodeService:
                 kube_status=exc.status,
             ) from exc
         except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
+            raise connection_error(cluster, exc) from exc
 
         nodes = [self._node_to_info(n) for n in node_list.items]
         _logger.info("Listed %d node(s) | cluster=%s", len(nodes), cluster)
@@ -137,7 +123,7 @@ class NodeService:
                 kube_status=exc.status,
             ) from exc
         except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
+            raise connection_error(cluster, exc) from exc
 
         node_set = set(nodes) if nodes else None
         status_set = {s.lower() for s in statuses} if statuses else None
@@ -413,7 +399,7 @@ class NodeService:
                 kube_status=exc.status,
             ) from exc
         except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
+            raise connection_error(cluster, exc) from exc
 
         # Step 3 — classify. Skips are unconditional; blocks are opt-out.
         pods_to_evict = []
@@ -630,7 +616,7 @@ class NodeService:
                     kube_status=exc.status,
                 ) from exc
             except Urllib3HTTPError as exc:
-                raise _connection_error(cluster, exc) from exc
+                raise connection_error(cluster, exc) from exc
             current = self._read_node(cluster, node_name, kube)
             _logger.info("Patched taints | cluster=%s | node=%s", cluster, node_name)
 
@@ -660,7 +646,7 @@ class NodeService:
                 kube_status=exc.status,
             ) from exc
         except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
+            raise connection_error(cluster, exc) from exc
 
     def _patch_labels(
         self,
@@ -694,7 +680,7 @@ class NodeService:
                 kube_status=exc.status,
             ) from exc
         except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
+            raise connection_error(cluster, exc) from exc
         return True
 
     def _patch_annotations(
@@ -729,7 +715,7 @@ class NodeService:
                 kube_status=exc.status,
             ) from exc
         except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
+            raise connection_error(cluster, exc) from exc
         return True
 
     def _fetch_node_labels(self, cluster: str, node_name: str, kube: CoreV1Api) -> dict[str, str]:
@@ -758,7 +744,7 @@ class NodeService:
                 kube_status=exc.status,
             ) from exc
         except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
+            raise connection_error(cluster, exc) from exc
 
         return {n.metadata.name: self._node_status(n) for n in node_list.items}
 
@@ -776,7 +762,7 @@ class NodeService:
                 kube_status=exc.status,
             ) from exc
         except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
+            raise connection_error(cluster, exc) from exc
 
     @staticmethod
     def _to_taint_spec(taint) -> TaintSpec:
