@@ -1,13 +1,19 @@
 """
 tests/integration/test_dry_run_configmap_routes.py
 
-GET /api/v1/clusters/{cluster}/configmaps, end to end through the real router
-and ConfigMapService, with only the cluster replaced (DRY_RUN_MODE).
+Both ConfigMap routes, end to end through the real router and
+ConfigMapService, with only the cluster replaced (DRY_RUN_MODE):
 
-The listing is a lower privilege than reading content (CONTEXT.md, "ConfigMap
-listing"), so the assertion that matters most is that no value and no
-annotation reaches the response. Auth refusals live with every other router's
-in test_dry_run_deny_paths.py.
+  GET …/configmaps                                — listing (cluster_api)
+  GET …/namespaces/{namespace}/configmaps/{name}  — content (+ configmap_read)
+
+Listing is a lower privilege than reading content (CONTEXT.md), so the
+assertions that matter most are negative: no value or annotation in a listing,
+no stale last-applied copy in content. Generic 401 / 403 refusals live with
+every other router's in test_dry_run_deny_paths.py; the scope tests here are
+the ones that express the relationship between the two privileges — what
+cluster_api alone can and cannot do, and that a missing ConfigMap cannot be
+probed without configmap_read.
 """
 
 from __future__ import annotations
@@ -101,49 +107,6 @@ def test_marks_the_response_as_dry_run(client, headers):
     assert resp.json()["dry_run"] is True
 
 
-# ── blocking work stays off the event loop ────────────────────────────────────
-
-
-def _on_event_loop() -> bool:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return False
-    return True
-
-
-def test_client_construction_runs_off_the_event_loop(client, headers, monkeypatch):
-    """Resolving credentials reads a kubeconfig and may run an exec credential
-    plugin (EKS / GKE) that takes seconds; building the client can write a CA
-    temp file. On the event loop either one stalls every request, health checks
-    included — the same reason the service call itself is threaded."""
-    from app.api.v1 import configmaps
-    from app.repositories.dry_run_cluster_repository import DryRunClusterRepository
-    from app.services.kube_client import KubeClientFactory
-
-    seen: dict[str, bool] = {}
-
-    class RecordingRepo(DryRunClusterRepository):
-        def get_kube_client_config(self, cluster):
-            seen["repo"] = _on_event_loop()
-            return super().get_kube_client_config(cluster)
-
-    class RecordingFactory(KubeClientFactory):
-        def get_core_v1(self, cfg):
-            seen["factory"] = _on_event_loop()
-            return super().get_core_v1(cfg)
-
-    client.app.dependency_overrides[configmaps._get_cluster_repo] = RecordingRepo
-    monkeypatch.setattr(configmaps, "KubeClientFactory", RecordingFactory)
-    try:
-        resp = client.get(_URL, headers=headers, params={"namespace": "*"})
-    finally:
-        client.app.dependency_overrides.clear()
-
-    assert resp.status_code == 200
-    assert seen == {"repo": False, "factory": False}
-
-
 # ══ content: GET …/namespaces/{namespace}/configmaps/{name} ═══════════════════
 #
 # Needs cluster_api AND configmap_read: configmap_read is a step above cluster
@@ -232,7 +195,30 @@ def test_a_missing_configmap_is_403_not_404_without_the_scope(client, operator_h
     assert resp.status_code == 403
 
 
-def test_content_read_runs_client_construction_off_the_event_loop(client, headers, monkeypatch):
+# ── blocking work stays off the event loop (both routes) ──────────────────────
+
+
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+@pytest.mark.parametrize(
+    "url, params",
+    [
+        (_URL, {"namespace": "*"}),
+        (_content_url("default", "dry-run-app-config"), {}),
+    ],
+    ids=["listing", "content"],
+)
+def test_client_construction_runs_off_the_event_loop(client, headers, monkeypatch, url, params):
+    """Resolving credentials reads a kubeconfig and may run an exec credential
+    plugin (EKS / GKE) that takes seconds; building the client can write a CA
+    temp file. On the event loop either one stalls every request, health checks
+    included — the same reason the service call itself is threaded."""
     from app.api.v1 import configmaps
     from app.repositories.dry_run_cluster_repository import DryRunClusterRepository
     from app.services.kube_client import KubeClientFactory
@@ -252,7 +238,7 @@ def test_content_read_runs_client_construction_off_the_event_loop(client, header
     client.app.dependency_overrides[configmaps._get_cluster_repo] = RecordingRepo
     monkeypatch.setattr(configmaps, "KubeClientFactory", RecordingFactory)
     try:
-        resp = client.get(_content_url("default", "dry-run-app-config"), headers=headers)
+        resp = client.get(url, headers=headers, params=params)
     finally:
         client.app.dependency_overrides.clear()
 

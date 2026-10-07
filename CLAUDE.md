@@ -147,6 +147,7 @@ Only the outermost side-effecting collaborators are replaced. Everything a calle
 
 - authentication and scope checks (401 / 403), Pydantic validation (422) including the batch cap of 100, enforced before any work
 - every `NodeService` rule: the uncordon readiness gate (409 `NODE_NOT_READY`, no override), drain's refuse-before-evict (400 `DRAIN_BLOCKED`), the always-skipped pod categories, batch failure layering
+- every `ConfigMapService` rule: no value or annotation in a listing, `last-applied-configuration` stripped from content, 404 → `CONFIGMAP_NOT_FOUND`
 - `PipelineService`, `CommandService`, `InventoryProxyService`, and the `DeployServiceError` code / status mapping
 - the published contract: the OpenAPI document is identical to production's, as are the error envelope and the `X-Coordination-ID` → `request_id` round trip
 
