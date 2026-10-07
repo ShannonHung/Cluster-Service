@@ -328,15 +328,22 @@ class NodeService:
             ) as exc:
                 if self._is_cluster_level(exc):
                     raise
-                # NodeNotFoundException carries no kube_status of its own — it is
-                # only ever raised on a 404, so fall back to the app-level status.
+                # NodeNotFoundException / NodeNotReadyException carry no
+                # kube_status of their own (each is raised on one known status),
+                # so they fall back to the app-level status. A KubeApiException
+                # reports exactly what the API server said — None included,
+                # rather than a fabricated 502.
                 results.append(
                     BatchNodeResult(
                         node=node_name,
                         status="failed",
                         error_code=str(exc.error_code),
                         message=str(exc),
-                        kube_status=getattr(exc, "kube_status", None) or exc.http_status,
+                        kube_status=(
+                            exc.kube_status
+                            if isinstance(exc, KubeApiException)
+                            else exc.http_status
+                        ),
                     )
                 )
 

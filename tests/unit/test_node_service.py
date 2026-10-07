@@ -1090,6 +1090,30 @@ def test_cordon_many_api_error_carries_underlying_status():
     assert result.results[0].kube_status == 503
 
 
+def test_cordon_many_reports_no_status_when_the_api_gave_none():
+    """An ApiException without a status must not crash the batch, and the
+    per-node result must not invent one: kube_status is what the API server
+    said, and here it said nothing."""
+    kube = _make_kube()
+    kube.patch_node.side_effect = ApiException(reason="no response")
+
+    result = _svc().cordon_many(cluster="test", node_names=["n1"], kube=kube)
+
+    assert result.summary.failed == 1
+    assert result.results[0].error_code == "KUBE_API_ERROR"
+    assert result.results[0].kube_status is None
+
+
+def test_read_with_no_status_is_a_502_kube_api_error():
+    kube = _make_kube()
+    kube.read_node.side_effect = ApiException(reason="no response")
+
+    with pytest.raises(KubeApiException) as exc_info:
+        _svc().get_node(cluster="test", node_name="n1", kube=kube)
+    assert exc_info.value.http_status == 502
+    assert exc_info.value.kube_status is None
+
+
 def test_cordon_many_deduplicates_node_names():
     kube = _make_kube()
 
