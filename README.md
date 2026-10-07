@@ -192,6 +192,7 @@ apply it to every managed cluster and use that ServiceAccount's token.
 | `PATCH /clusters/{cluster}/nodes/{node}/annotations` | `nodes` | `get`, `patch` |
 | `PATCH /clusters/{cluster}/nodes/{node}/taints` | `nodes` | `get`, `patch` |
 | `GET /clusters/{cluster}/pods` | `pods` | `list` |
+| `GET /clusters/{cluster}/configmaps` | `configmaps` | `list` |
 
 All paths are under `/api/v1`. `GET /clusters` reads local config only and
 needs no Kubernetes permission.

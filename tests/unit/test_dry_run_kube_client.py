@@ -226,3 +226,65 @@ def test_an_ordinary_evictable_pod_is_present(kube):
     assert [o.kind for o in web.metadata.owner_references] == ["ReplicaSet"]
     assert web.status.phase == "Running"
     assert not any(v.empty_dir is not None for v in (web.spec.volumes or []))
+
+
+# ── configmaps ────────────────────────────────────────────────────────────────
+
+_LAST_APPLIED = "kubectl.kubernetes.io/last-applied-configuration"
+
+
+def _configmaps(kube) -> dict[tuple[str, str], object]:
+    return {
+        (cm.metadata.namespace, cm.metadata.name): cm
+        for cm in kube.list_config_map_for_all_namespaces().items
+    }
+
+
+def test_exposes_every_method_configmap_service_calls(kube):
+    for name in ("list_namespaced_config_map", "list_config_map_for_all_namespaces"):
+        assert hasattr(kube, name), f"missing {name}"
+
+
+def test_namespaced_listing_is_scoped_to_the_namespace(kube):
+    items = kube.list_namespaced_config_map("apps").items
+    assert items, "an empty namespace proves nothing"
+    assert {cm.metadata.namespace for cm in items} == {"apps"}
+
+
+def test_an_unknown_namespace_lists_nothing(kube):
+    """A real cluster answers 200 with an empty list, not 404."""
+    assert kube.list_namespaced_config_map("no-such-namespace").items == []
+
+
+def test_a_data_only_configmap_is_present(kube):
+    cm = _configmaps(kube)[("default", "dry-run-app-config")]
+    assert cm.data and not cm.binary_data
+
+
+def test_a_binary_data_configmap_is_present(kube):
+    cm = _configmaps(kube)[("default", "dry-run-binary")]
+    assert cm.binary_data
+
+
+def test_a_configmap_carrying_last_applied_is_present(kube):
+    """Without it, nothing proves the listing withholds annotations — or, for
+    content reads, that this one is stripped while the others survive."""
+    cm = _configmaps(kube)[("default", "dry-run-applied")]
+    assert _LAST_APPLIED in cm.metadata.annotations
+    assert len(cm.metadata.annotations) > 1, "needs a second annotation to survive stripping"
+
+
+def test_the_same_name_exists_in_two_namespaces_with_different_data(kube):
+    """Same name, two namespaces, two different ConfigMaps (CONTEXT.md)."""
+    cms = _configmaps(kube)
+    a = cms[("default", "dry-run-shared")]
+    b = cms[("apps", "dry-run-shared")]
+    assert a.data != b.data
+
+
+def test_listing_hands_out_copies(kube):
+    """ConfigMaps are read-only here, so a caller mutating a result must not
+    change what the next request sees."""
+    kube.list_namespaced_config_map("default").items[0].data["tampered"] = "yes"
+    for cm in kube.list_namespaced_config_map("default").items:
+        assert "tampered" not in (cm.data or {})

@@ -14,6 +14,7 @@ Response convention:
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -278,6 +279,33 @@ class PodListData(BaseModel):
     cluster: str
     namespace: str
     pods: list[PodInfo] = Field(default_factory=list)
+
+
+class ConfigMapSummary(BaseModel):
+    """One ConfigMap as a listing shows it: its shape, never its values.
+
+    Annotations are deliberately absent — ``last-applied-configuration`` holds
+    a full copy of the values, so passing annotations through would let the
+    listing (``cluster_api``) bypass the content privilege. See CONTEXT.md,
+    "ConfigMap listing".
+    """
+
+    name: str
+    namespace: str
+    keys: list[str] = Field(
+        default_factory=list,
+        description="Key names from both data and binaryData, sorted. Never values.",
+    )
+    labels: dict[str, str] = Field(default_factory=dict)
+    creation_timestamp: Optional[datetime] = None
+
+
+class ConfigMapListData(BaseModel):
+    """Response body for GET /api/v1/clusters/{cluster}/configmaps."""
+
+    cluster: str
+    namespace: str
+    configmaps: list[ConfigMapSummary] = Field(default_factory=list)
 
 
 class NodeDetailData(BaseModel):
