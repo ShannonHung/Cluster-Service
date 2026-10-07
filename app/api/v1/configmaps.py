@@ -69,13 +69,18 @@ async def list_configmaps(
     name: Optional[str] = Query(None, description="Comma-separated name prefixes."),
     repo: ClusterRepository = Depends(_get_cluster_repo),
 ) -> ApiResponse[ConfigMapListData]:
-    cfg = repo.get_kube_client_config(cluster)
-    kube = KubeClientFactory().get_core_v1(cfg)
-    data = await asyncio.to_thread(
-        ConfigMapService().list_configmaps,
-        cluster=cluster,
-        namespace=namespace,
-        kube=kube,
-        name_prefixes=_split_csv(name),
-    )
+    def _list() -> ConfigMapListData:
+        # Credentials and client construction block too — a kubeconfig read, an
+        # exec credential plugin (EKS / GKE), a CA temp file — so they run in
+        # the worker thread with the call itself, not on the event loop.
+        cfg = repo.get_kube_client_config(cluster)
+        kube = KubeClientFactory().get_core_v1(cfg)
+        return ConfigMapService().list_configmaps(
+            cluster=cluster,
+            namespace=namespace,
+            kube=kube,
+            name_prefixes=_split_csv(name),
+        )
+
+    data = await asyncio.to_thread(_list)
     return ApiResponse(data=data, request_id=_request_id(request))

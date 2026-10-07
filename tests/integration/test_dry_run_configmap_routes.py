@@ -12,6 +12,8 @@ in test_dry_run_deny_paths.py.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -97,3 +99,46 @@ def test_namespace_is_required(client, headers):
 def test_marks_the_response_as_dry_run(client, headers):
     resp = client.get(_URL, headers=headers, params={"namespace": "*"})
     assert resp.json()["dry_run"] is True
+
+
+# ── blocking work stays off the event loop ────────────────────────────────────
+
+
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def test_client_construction_runs_off_the_event_loop(client, headers, monkeypatch):
+    """Resolving credentials reads a kubeconfig and may run an exec credential
+    plugin (EKS / GKE) that takes seconds; building the client can write a CA
+    temp file. On the event loop either one stalls every request, health checks
+    included — the same reason the service call itself is threaded."""
+    from app.api.v1 import configmaps
+    from app.repositories.dry_run_cluster_repository import DryRunClusterRepository
+    from app.services.kube_client import KubeClientFactory
+
+    seen: dict[str, bool] = {}
+
+    class RecordingRepo(DryRunClusterRepository):
+        def get_kube_client_config(self, cluster):
+            seen["repo"] = _on_event_loop()
+            return super().get_kube_client_config(cluster)
+
+    class RecordingFactory(KubeClientFactory):
+        def get_core_v1(self, cfg):
+            seen["factory"] = _on_event_loop()
+            return super().get_core_v1(cfg)
+
+    client.app.dependency_overrides[configmaps._get_cluster_repo] = RecordingRepo
+    monkeypatch.setattr(configmaps, "KubeClientFactory", RecordingFactory)
+    try:
+        resp = client.get(_URL, headers=headers, params={"namespace": "*"})
+    finally:
+        client.app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert seen == {"repo": False, "factory": False}

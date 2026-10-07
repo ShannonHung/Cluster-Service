@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from kubernetes.client import CoreV1Api, V1ConfigMap
+from kubernetes.client import CoreV1Api, V1ConfigMap, V1ConfigMapList
 from kubernetes.client.exceptions import ApiException
 from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
@@ -21,6 +21,11 @@ from app.domain.kubernetes_models import ConfigMapListData, ConfigMapSummary
 from app.services.kube_errors import connection_error
 
 _logger = logging.getLogger(__name__)
+
+# ConfigMaps per request to the API server. Kubernetes cannot list ConfigMaps
+# without their values (up to 1 MiB each), so a listing that only needs key
+# names still receives every value; paging bounds how many are held at once.
+PAGE_SIZE = 500
 
 
 class ConfigMapService:
@@ -41,11 +46,38 @@ class ConfigMapService:
         Raises:
             KubeApiException: On Kubernetes API failure.
         """
+        prefixes = tuple(name_prefixes) if name_prefixes else None
+        configmaps: list[ConfigMapSummary] = []
+        token: str | None = None
+        while True:
+            page = self._fetch_page(cluster, namespace, kube, token)
+            configmaps.extend(
+                _to_summary(cm)
+                for cm in page.items
+                if prefixes is None or cm.metadata.name.startswith(prefixes)
+            )
+            token = page.metadata._continue if page.metadata else None
+            if not token:  # the API server sends "" (or nothing) on the last page
+                break
+
+        _logger.info(
+            "Listed %d configmap(s) | cluster=%s | namespace=%s",
+            len(configmaps), cluster, namespace,
+        )
+        return ConfigMapListData(cluster=cluster, namespace=namespace, configmaps=configmaps)
+
+    @staticmethod
+    def _fetch_page(
+        cluster: str, namespace: str, kube: CoreV1Api, token: str | None
+    ) -> V1ConfigMapList:
         try:
             if namespace == "*":
-                cm_list = kube.list_config_map_for_all_namespaces()
-            else:
-                cm_list = kube.list_namespaced_config_map(namespace)
+                return kube.list_config_map_for_all_namespaces(
+                    limit=PAGE_SIZE, _continue=token
+                )
+            return kube.list_namespaced_config_map(
+                namespace, limit=PAGE_SIZE, _continue=token
+            )
         except ApiException as exc:
             raise KubeApiException(
                 f"Failed to list configmaps in namespace '{namespace}' "
@@ -54,19 +86,6 @@ class ConfigMapService:
             ) from exc
         except Urllib3HTTPError as exc:
             raise connection_error(cluster, exc) from exc
-
-        prefixes = tuple(name_prefixes) if name_prefixes else None
-        configmaps = [
-            _to_summary(cm)
-            for cm in cm_list.items
-            if prefixes is None or cm.metadata.name.startswith(prefixes)
-        ]
-
-        _logger.info(
-            "Listed %d configmap(s) | cluster=%s | namespace=%s",
-            len(configmaps), cluster, namespace,
-        )
-        return ConfigMapListData(cluster=cluster, namespace=namespace, configmaps=configmaps)
 
 
 def _to_summary(cm: V1ConfigMap) -> ConfigMapSummary:
