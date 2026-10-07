@@ -1,0 +1,69 @@
+# RBAC reference for cluster-service.
+#
+# What cluster-service needs on every cluster it MANAGES (the clusters listed
+# under KUBECONFIG_BASE_PATH) — not on the cluster it happens to run in. Apply
+# this to each managed cluster, then put a token for the ServiceAccount below
+# into that cluster's credentials file (`<cluster>.json`, see
+# JsonClusterRepository).
+#
+# Reference only: nothing applies this file. Local k3d runs on an admin
+# kubeconfig, so a missing permission never shows up locally — only as a 403 in
+# production. tests/unit/test_rbac_reference.py fails when this file and the
+# Kubernetes calls in app/services disagree, in either direction.
+#
+# A ClusterRole, not a namespaced Role: nodes are cluster-scoped, and pod
+# listing accepts namespace="*".
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cluster-service
+  namespace: antigravity
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-service
+rules:
+  # get   — GET    /clusters/{cluster}/nodes/{node}
+  #         POST   /clusters/{cluster}/nodes/{node}/uncordon      (readiness gate)
+  #         PATCH  /clusters/{cluster}/nodes/{node}/labels        (re-read after patch)
+  #         PATCH  /clusters/{cluster}/nodes/{node}/annotations   (re-read after patch)
+  #         PATCH  /clusters/{cluster}/nodes/{node}/taints
+  # list  — GET    /clusters/{cluster}/nodes
+  #         POST   /clusters/{cluster}/nodes:uncordon             (one listing for the readiness gate)
+  # patch — POST   /clusters/{cluster}/nodes/{node}/cordon
+  #         POST   /clusters/{cluster}/nodes/{node}/uncordon
+  #         POST   /clusters/{cluster}/nodes:cordon
+  #         POST   /clusters/{cluster}/nodes:uncordon
+  #         POST   /clusters/{cluster}/nodes/{node}/drain         (cordons first)
+  #         PATCH  /clusters/{cluster}/nodes/{node}/labels
+  #         PATCH  /clusters/{cluster}/nodes/{node}/annotations
+  #         PATCH  /clusters/{cluster}/nodes/{node}/taints
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "patch"]
+
+  # list   — GET  /clusters/{cluster}/pods
+  #          POST /clusters/{cluster}/nodes/{node}/drain   (pods on the node, then wait for them to go)
+  # delete — POST /clusters/{cluster}/nodes/{node}/drain   (only with disable_eviction=true)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "delete"]
+
+  # create — POST /clusters/{cluster}/nodes/{node}/drain   (default: eviction honours PDBs)
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-service
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-service
+subjects:
+  - kind: ServiceAccount
+    name: cluster-service
+    namespace: antigravity
