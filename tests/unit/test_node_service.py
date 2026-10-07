@@ -332,6 +332,69 @@ def test_drain_returns_drain_action_data_with_pod_list():
     assert result.drained_pods[0].namespace == "default"
 
 
+# Drain's own status handling, kept inside translate_kube_errors: a pod that is
+# already gone is not a failure, a PodDisruptionBudget refusal is a 409 with a
+# way out, and everything else is translated like any other Kubernetes call.
+
+
+def _drain_one_pod(kube: MagicMock, **options):
+    kube.list_pod_for_all_namespaces.side_effect = [
+        MagicMock(items=[_make_pod("app-pod", "default")]),  # listing
+        MagicMock(items=[]),                                  # wait loop
+    ]
+    return _svc().drain("test", "worker-1", kube, DrainOptions(**options))
+
+
+def test_drain_eviction_of_an_already_gone_pod_is_not_a_failure():
+    kube = _make_kube()
+    kube.create_namespaced_pod_eviction.side_effect = _api_error(404, "Not Found")
+    assert _drain_one_pod(kube).node_emptied is True
+
+
+def test_drain_deletion_of_an_already_gone_pod_is_not_a_failure():
+    kube = _make_kube()
+    kube.delete_namespaced_pod.side_effect = _api_error(404, "Not Found")
+    assert _drain_one_pod(kube, disable_eviction=True).node_emptied is True
+
+
+def test_drain_blocked_by_a_pdb_is_a_409_naming_the_way_out():
+    kube = _make_kube()
+    kube.create_namespaced_pod_eviction.side_effect = _api_error(429, "Too Many Requests")
+    with pytest.raises(KubeApiException) as exc_info:
+        _drain_one_pod(kube)
+    assert exc_info.value.http_status == 409
+    assert "PodDisruptionBudget" in str(exc_info.value)
+    assert "disable_eviction" in str(exc_info.value)
+
+
+def test_drain_other_eviction_errors_keep_the_upstream_status():
+    kube = _make_kube()
+    kube.create_namespaced_pod_eviction.side_effect = _api_error(500, "Internal")
+    with pytest.raises(KubeApiException) as exc_info:
+        _drain_one_pod(kube)
+    assert exc_info.value.http_status == 500
+    assert "default/app-pod" in str(exc_info.value)
+
+
+def test_drain_eviction_network_error_is_a_503():
+    kube = _make_kube()
+    kube.create_namespaced_pod_eviction.side_effect = Urllib3HTTPError("connection refused")
+    with pytest.raises(KubeApiException) as exc_info:
+        _drain_one_pod(kube)
+    assert exc_info.value.http_status == 503
+
+
+def test_drain_wait_loop_api_error_is_translated():
+    kube = _make_kube()
+    kube.list_pod_for_all_namespaces.side_effect = [
+        MagicMock(items=[_make_pod("app-pod", "default")]),
+        _api_error(500, "Internal"),
+    ]
+    with pytest.raises(KubeApiException) as exc_info:
+        _svc().drain("test", "worker-1", kube, DrainOptions())
+    assert exc_info.value.http_status == 500
+
+
 def test_drain_always_skips_daemonset_pods():
     """DaemonSet pods must be skipped regardless of any option."""
     kube = _make_kube()
