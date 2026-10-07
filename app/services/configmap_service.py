@@ -16,8 +16,12 @@ from kubernetes.client import CoreV1Api, V1ConfigMap, V1ConfigMapList
 from kubernetes.client.exceptions import ApiException
 from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
-from app.core.exceptions import KubeApiException
-from app.domain.kubernetes_models import ConfigMapListData, ConfigMapSummary
+from app.core.exceptions import ConfigMapNotFoundException, KubeApiException
+from app.domain.kubernetes_models import (
+    ConfigMapDetailData,
+    ConfigMapListData,
+    ConfigMapSummary,
+)
 from app.services.kube_errors import connection_error
 
 _logger = logging.getLogger(__name__)
@@ -27,9 +31,13 @@ _logger = logging.getLogger(__name__)
 # names still receives every value; paging bounds how many are held at once.
 PAGE_SIZE = 500
 
+# A copy of the values as of the last `kubectl apply`. Not content: after a
+# `kubectl edit` it disagrees with data (CONTEXT.md, "ConfigMap content").
+_LAST_APPLIED = "kubectl.kubernetes.io/last-applied-configuration"
+
 
 class ConfigMapService:
-    """Lists ConfigMaps."""
+    """Lists ConfigMaps and reads one ConfigMap's content."""
 
     def list_configmaps(
         self,
@@ -65,6 +73,49 @@ class ConfigMapService:
             len(configmaps), cluster, namespace,
         )
         return ConfigMapListData(cluster=cluster, namespace=namespace, configmaps=configmaps)
+
+    def get_configmap(
+        self, cluster: str, namespace: str, name: str, kube: CoreV1Api
+    ) -> ConfigMapDetailData:
+        """Read one ConfigMap's values.
+
+        Raises:
+            ConfigMapNotFoundException: The ConfigMap — or its namespace — does not exist.
+            KubeApiException: On any other Kubernetes API failure.
+        """
+        try:
+            cm = kube.read_namespaced_config_map(name, namespace)
+        except ApiException as exc:
+            if exc.status == 404:
+                raise ConfigMapNotFoundException(
+                    f"ConfigMap '{name}' not found in namespace '{namespace}' "
+                    f"of cluster '{cluster}' (the namespace may not exist either).",
+                ) from exc
+            raise KubeApiException(
+                f"Failed to read configmap '{namespace}/{name}' "
+                f"of cluster '{cluster}': {exc.reason}",
+                kube_status=exc.status,
+            ) from exc
+        except Urllib3HTTPError as exc:
+            raise connection_error(cluster, exc) from exc
+
+        _logger.info(
+            "Read configmap | cluster=%s | namespace=%s | name=%s",
+            cluster, namespace, name,
+        )
+        annotations = {
+            k: v for k, v in (cm.metadata.annotations or {}).items() if k != _LAST_APPLIED
+        }
+        return ConfigMapDetailData(
+            cluster=cluster,
+            name=cm.metadata.name,
+            namespace=cm.metadata.namespace,
+            labels=cm.metadata.labels or {},
+            annotations=annotations,
+            creation_timestamp=cm.metadata.creation_timestamp,
+            data=cm.data or {},
+            binary_data=cm.binary_data or {},
+        )
 
     @staticmethod
     def _fetch_page(

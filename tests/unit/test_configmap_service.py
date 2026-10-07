@@ -18,8 +18,8 @@ from kubernetes.client import V1ConfigMap, V1ConfigMapList, V1ListMeta, V1Object
 from kubernetes.client.exceptions import ApiException
 from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
-from app.core.exceptions import KubeApiException
-from app.domain.kubernetes_models import ConfigMapListData
+from app.core.exceptions import ConfigMapNotFoundException, KubeApiException
+from app.domain.kubernetes_models import ConfigMapDetailData, ConfigMapListData
 from app.services.configmap_service import PAGE_SIZE, ConfigMapService
 
 _CREATED = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
@@ -256,5 +256,118 @@ def test_network_error_is_a_cluster_level_503():
 
     with pytest.raises(KubeApiException) as exc_info:
         _list(kube, namespace="*")
+    assert exc_info.value.http_status == 503
+    assert exc_info.value.cluster_level is True
+
+
+# ══ content ═══════════════════════════════════════════════════════════════════
+#
+# Reading one ConfigMap's values — a separate, higher privilege than listing
+# (CONTEXT.md, "ConfigMap content"). The scope check lives in the router; what
+# the service owns is the shape: every value, and no stale second copy of them.
+
+
+def _read(kube: MagicMock, namespace: str = "default", name: str = "app-config"):
+    return ConfigMapService().get_configmap(
+        cluster="test", namespace=namespace, name=name, kube=kube
+    )
+
+
+def _kube_reading(cm: V1ConfigMap) -> MagicMock:
+    kube = MagicMock()
+    kube.read_namespaced_config_map.return_value = cm
+    return kube
+
+
+def test_content_carries_every_value():
+    kube = _kube_reading(
+        _cm(
+            "app-config",
+            data={"LOG_LEVEL": "debug"},
+            binary_data={"cert.der": "AAEC"},
+            labels={"app": "web"},
+        )
+    )
+    detail = _read(kube)
+
+    assert isinstance(detail, ConfigMapDetailData)
+    assert detail.cluster == "test"
+    assert detail.name == "app-config"
+    assert detail.namespace == "default"
+    assert detail.data == {"LOG_LEVEL": "debug"}
+    assert detail.labels == {"app": "web"}
+    assert detail.creation_timestamp == _CREATED
+    kube.read_namespaced_config_map.assert_called_once_with("app-config", "default")
+
+
+def test_binary_data_is_returned_as_base64_in_its_own_field():
+    """Kept apart from data so a caller cannot mistake base64 for text, and
+    returned as-is rather than silently dropped."""
+    detail = _read(_kube_reading(_cm("app-config", binary_data={"cert.der": "AAEC"})))
+    assert detail.binary_data == {"cert.der": "AAEC"}
+    assert detail.data == {}
+
+
+def test_last_applied_is_stripped_and_other_annotations_survive():
+    """last-applied is the values as of the last `kubectl apply`; after a
+    `kubectl edit` it disagrees with data, so showing it offers a second truth.
+    Other annotations (e.g. which Helm release owns this) are useful."""
+    kube = _kube_reading(
+        _cm(
+            "app-config",
+            data={"LOG_LEVEL": "warn"},
+            annotations={
+                _LAST_APPLIED: '{"data":{"LOG_LEVEL":"info"}}',
+                "meta.helm.sh/release-name": "web",
+            },
+        )
+    )
+    detail = _read(kube)
+
+    assert detail.annotations == {"meta.helm.sh/release-name": "web"}
+    assert "info" not in detail.model_dump_json()
+
+
+def test_managed_fields_are_not_part_of_the_shape():
+    assert "managed_fields" not in ConfigMapDetailData.model_fields
+
+
+def test_an_empty_configmap_has_empty_maps():
+    detail = _read(_kube_reading(_cm("app-config")))
+    assert detail.data == {}
+    assert detail.binary_data == {}
+    assert detail.labels == {}
+    assert detail.annotations == {}
+
+
+def test_not_found_names_namespace_and_name():
+    """The API server answers 404 for a missing ConfigMap and a missing
+    namespace alike; the message names both so the caller can tell which to check."""
+    kube = MagicMock()
+    kube.read_namespaced_config_map.side_effect = ApiException(status=404, reason="Not Found")
+
+    with pytest.raises(ConfigMapNotFoundException) as exc_info:
+        _read(kube, namespace="team-a", name="app-config")
+    assert exc_info.value.http_status == 404
+    assert exc_info.value.error_code == "CONFIGMAP_NOT_FOUND"
+    assert "team-a" in str(exc_info.value)
+    assert "app-config" in str(exc_info.value)
+
+
+def test_other_api_errors_keep_the_upstream_status():
+    kube = MagicMock()
+    kube.read_namespaced_config_map.side_effect = ApiException(status=403, reason="Forbidden")
+
+    with pytest.raises(KubeApiException) as exc_info:
+        _read(kube)
+    assert exc_info.value.http_status == 403
+
+
+def test_a_network_error_on_read_is_a_cluster_level_503():
+    kube = MagicMock()
+    kube.read_namespaced_config_map.side_effect = Urllib3HTTPError("refused")
+
+    with pytest.raises(KubeApiException) as exc_info:
+        _read(kube)
     assert exc_info.value.http_status == 503
     assert exc_info.value.cluster_level is True

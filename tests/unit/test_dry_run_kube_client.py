@@ -241,7 +241,11 @@ def _configmaps(kube) -> dict[tuple[str, str], object]:
 
 
 def test_exposes_every_method_configmap_service_calls(kube):
-    for name in ("list_namespaced_config_map", "list_config_map_for_all_namespaces"):
+    for name in (
+        "list_namespaced_config_map",
+        "list_config_map_for_all_namespaces",
+        "read_namespaced_config_map",
+    ):
         assert hasattr(kube, name), f"missing {name}"
 
 
@@ -288,3 +292,28 @@ def test_listing_hands_out_copies(kube):
     kube.list_namespaced_config_map("default").items[0].data["tampered"] = "yes"
     for cm in kube.list_namespaced_config_map("default").items:
         assert "tampered" not in (cm.data or {})
+
+
+def test_read_returns_the_configmap_in_that_namespace(kube):
+    """Same name, two namespaces: the namespace decides which one you get."""
+    assert kube.read_namespaced_config_map("dry-run-shared", "default").data == {"TEAM": "default"}
+    assert kube.read_namespaced_config_map("dry-run-shared", "apps").data == {"TEAM": "apps"}
+
+
+def test_reading_a_missing_configmap_raises_the_sdk_404(kube):
+    """The SDK's own exception, so ConfigMapService's 404 → CONFIGMAP_NOT_FOUND
+    mapping runs exactly as in production."""
+    with pytest.raises(ApiException) as exc_info:
+        kube.read_namespaced_config_map("no-such-configmap", "default")
+    assert exc_info.value.status == 404
+
+
+def test_reading_from_a_missing_namespace_raises_the_sdk_404(kube):
+    with pytest.raises(ApiException) as exc_info:
+        kube.read_namespaced_config_map("dry-run-app-config", "no-such-namespace")
+    assert exc_info.value.status == 404
+
+
+def test_read_hands_out_a_copy(kube):
+    kube.read_namespaced_config_map("dry-run-app-config", "default").data["tampered"] = "yes"
+    assert "tampered" not in kube.read_namespaced_config_map("dry-run-app-config", "default").data

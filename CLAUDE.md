@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `cluster-service` is one of two FastAPI sub-projects under `antigravity-fastapi/` (the other is `deploy-service/`). This service has three responsibilities:
 
-1. **Kubernetes cluster operations** — list clusters, list/get nodes, cordon, uncordon, drain, label, annotate, list pods, list ConfigMaps. Talks directly to multiple Kubernetes clusters via the `kubernetes` SDK.
+1. **Kubernetes cluster operations** — list clusters, list/get nodes, cordon, uncordon, drain, label, annotate, list pods, list ConfigMaps, read a ConfigMap's content. Talks directly to multiple Kubernetes clusters via the `kubernetes` SDK.
 2. **Deploy-service proxy** — trigger / cancel / retry / status GitLab pipelines by forwarding to `deploy-service` over HTTP with managed bearer-token auth.
 3. **Command-execution proxy** — list available commands, run them, poll results, view live logs, and kill running commands by forwarding to `deploy-service`'s SSH command API over HTTP. The upstream identity (`cluster_proxy`) is restricted by deploy-service's per-user whitelist to **ansible commands only**.
 
@@ -62,8 +62,9 @@ router → ClusterRepository.get_kube_client_config(cluster)
 
 **Config / environments** (`app/core/config.py`): `APP_ENV` selects the env file. Settings loads `.env` then `.env.{APP_ENV}` (override order). `get_settings()` is `lru_cache`'d — reset it in tests with `get_settings.cache_clear()`. `KUBECONFIG_BASE_PATH`, `CORDON_LABEL_REASON`, `CORDON_LABEL_BY`, and the `DEPLOY_SERVICE_*` values are all sourced from here, never hardcoded.
 
-**Auth** (`app/core/security.py`, `app/core/dependencies.py`): JWT (HS256) + bcrypt. Use `Depends(get_current_user(["scope_name"]))` on any route. Four scopes are in use:
+**Auth** (`app/core/security.py`, `app/core/dependencies.py`): JWT (HS256) + bcrypt. Use `Depends(get_current_user(["scope_name"]))` on any route; a token must hold **every** scope listed. Five scopes are in use:
 - `cluster_api` — gates all `/api/v1/clusters/...` and `/api/v1/clusters/{cluster}/nodes/...` endpoints.
+- `configmap_read` — additionally required (with `cluster_api`) to read a ConfigMap's content. A step above cluster access, not a separate way in: listing ConfigMaps needs only `cluster_api` and never returns values (CONTEXT.md).
 - `deploy_api` — gates all `/api/v1/deploy/...` endpoints.
 - `command_api` — gates all `/api/v1/command/...` endpoints.
 - `inventory_api` — gates all `/api/v1/inventory/...` endpoints.
@@ -146,6 +147,7 @@ Only the outermost side-effecting collaborators are replaced. Everything a calle
 
 - authentication and scope checks (401 / 403), Pydantic validation (422) including the batch cap of 100, enforced before any work
 - every `NodeService` rule: the uncordon readiness gate (409 `NODE_NOT_READY`, no override), drain's refuse-before-evict (400 `DRAIN_BLOCKED`), the always-skipped pod categories, batch failure layering
+- every `ConfigMapService` rule: no value or annotation in a listing, `last-applied-configuration` stripped from content, 404 → `CONFIGMAP_NOT_FOUND`
 - `PipelineService`, `CommandService`, `InventoryProxyService`, and the `DeployServiceError` code / status mapping
 - the published contract: the OpenAPI document is identical to production's, as are the error envelope and the `X-Coordination-ID` → `request_id` round trip
 

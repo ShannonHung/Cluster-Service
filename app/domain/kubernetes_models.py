@@ -308,6 +308,32 @@ class ConfigMapListData(BaseModel):
     configmaps: list[ConfigMapSummary] = Field(default_factory=list)
 
 
+class ConfigMapDetailData(BaseModel):
+    """Response body for GET …/namespaces/{namespace}/configmaps/{name}.
+
+    The values themselves (CONTEXT.md, "ConfigMap content"). Deliberately not
+    the full manifest: ``managedFields`` is bookkeeping noise, and the
+    ``last-applied-configuration`` annotation is stripped because it is the
+    values as of the last ``kubectl apply`` — after a ``kubectl edit`` it
+    disagrees with ``data`` and would read as a second truth.
+    """
+
+    cluster: str
+    name: str
+    namespace: str
+    labels: dict[str, str] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(
+        default_factory=dict,
+        description="All annotations except kubectl.kubernetes.io/last-applied-configuration.",
+    )
+    creation_timestamp: Optional[datetime] = None
+    data: dict[str, str] = Field(default_factory=dict)
+    binary_data: dict[str, str] = Field(
+        default_factory=dict,
+        description="binaryData as sent by Kubernetes: base64-encoded strings.",
+    )
+
+
 class NodeDetailData(BaseModel):
     """Full node detail (node attributes only; pods are queried separately).
 

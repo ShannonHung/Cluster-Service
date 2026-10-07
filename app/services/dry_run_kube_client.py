@@ -448,6 +448,20 @@ class DryRunCoreV1Api:
             items=[c for c in _default_configmaps() if c.metadata.namespace == namespace]
         )
 
+    def read_namespaced_config_map(self, name: str, namespace: str, **_kwargs: Any) -> V1ConfigMap:
+        """A missing ConfigMap and a missing namespace both raise the SDK's own
+        404, as the API server does, so the CONFIGMAP_NOT_FOUND mapping runs."""
+        _logger.warning(
+            "DRY-RUN | op=kube.read_namespaced_config_map | ns=%s | name=%s | "
+            "no cluster was contacted",
+            namespace,
+            name,
+        )
+        for cm in _default_configmaps():
+            if cm.metadata.namespace == namespace and cm.metadata.name == name:
+                return cm
+        raise _not_found(f"configmap {namespace}/{name}")
+
     # ── internals ─────────────────────────────────────────────────────────────
 
     def _remove_pod(self, namespace: str, name: str) -> V1Pod:
@@ -458,8 +472,9 @@ class DryRunCoreV1Api:
 
 
 def _not_found(what: str):
-    """Build the SDK's own 404, so NodeService's ``except ApiException`` paths
-    (which map 404 → NodeNotFoundException) run exactly as in production."""
+    """Build the SDK's own 404, so the services' ``except ApiException`` paths
+    (404 → NodeNotFoundException / ConfigMapNotFoundException) run exactly as
+    in production."""
     from kubernetes.client.exceptions import ApiException
 
     exc = ApiException(status=404, reason="Not Found")

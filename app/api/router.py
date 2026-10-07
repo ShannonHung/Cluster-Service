@@ -22,6 +22,7 @@ Route layout:
   POST /api/v1/clusters/{cluster}/nodes:uncordon               → Uncordon several nodes (batch)
   GET  /api/v1/clusters/{cluster}/pods                         → List pods in a namespace (filtered)
   GET  /api/v1/clusters/{cluster}/configmaps                   → List ConfigMaps (shape only, no values)
+  GET  /api/v1/clusters/{cluster}/namespaces/{ns}/configmaps/{name} → Read one ConfigMap's content (+configmap_read)
   PATCH /api/v1/clusters/{cluster}/nodes/{node}/taints         → Set or remove node taints
   GET  /api/v1/inventory/nodes/{node_name}                    → Cluster node lookup (proxy)
   GET  /api/v1/inventory/mappings                             → Bastion-cluster mappings (proxy)
