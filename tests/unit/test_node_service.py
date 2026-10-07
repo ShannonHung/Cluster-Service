@@ -1090,6 +1090,50 @@ def test_cordon_many_api_error_carries_underlying_status():
     assert result.results[0].kube_status == 503
 
 
+@pytest.mark.parametrize(
+    "api_error",
+    [
+        ApiException(status=0, reason="SSLError\ncertificate verify failed"),
+        ApiException(reason="no response"),  # status=None
+    ],
+    ids=["status-0-tls", "status-none"],
+)
+def test_a_failure_with_no_http_response_is_cluster_level(api_error):
+    """No response means nothing about any one node was learned: a TLS failure
+    or a request the SDK could not build repeats identically for every node.
+    Per CONTEXT.md ("Cluster-level failure") it propagates once instead of
+    being reported as N broken nodes — the same side as a connection error."""
+    kube = _make_kube()
+    kube.patch_node.side_effect = api_error
+
+    with pytest.raises(KubeApiException) as exc_info:
+        _svc().cordon_many(cluster="test", node_names=["n1", "n2", "n3"], kube=kube)
+
+    assert exc_info.value.kube_status is None
+    assert exc_info.value.http_status == 502
+    assert kube.patch_node.call_count == 1, "the batch should stop at the first node"
+
+
+def test_a_node_not_found_is_still_per_node():
+    """NodeNotFoundException has no kube_status either — the cluster-level
+    rule must key on a status-less *API* failure, not on a missing attribute."""
+    kube = _make_kube()
+    kube.patch_node.side_effect = [_api_error(404, "Not Found"), None]
+
+    result = _svc().cordon_many(cluster="test", node_names=["n1", "n2"], kube=kube)
+    assert [r.status for r in result.results] == ["failed", "success"]
+
+
+def test_read_with_no_status_is_a_502_kube_api_error():
+    kube = _make_kube()
+    kube.read_node.side_effect = ApiException(reason="no response")
+
+    with pytest.raises(KubeApiException) as exc_info:
+        _svc().get_node(cluster="test", node_name="n1", kube=kube)
+    assert exc_info.value.http_status == 502
+    assert exc_info.value.kube_status is None
+
+
 def test_cordon_many_deduplicates_node_names():
     kube = _make_kube()
 

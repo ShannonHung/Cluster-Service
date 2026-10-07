@@ -68,9 +68,10 @@ what the response says, not what was asked of the cluster.
 collected into the batch's results, letting the other nodes proceed.
 
 **Cluster-level failure** — A failure that would repeat identically for every
-node (unreachable API server, dead credentials). Propagated as a single error,
-because reporting it per node would claim N machines are broken when the real
-answer is one.
+node (unreachable API server, dead credentials, a certificate that fails TLS —
+any failure where no answer about a particular node came back at all).
+Propagated as a single error, because reporting it per node would claim N
+machines are broken when the real answer is one.
 
 ## Configuration resources
 

@@ -260,9 +260,15 @@ class NodeService:
         """
         if getattr(exc, "cluster_level", False):
             return True
+        if not isinstance(exc, KubeApiException):
+            # NodeNotFound / NodeNotReady are about one node by construction.
+            return False
         # 401/403 come from the API server, so they arrive untagged — but they
         # are a property of the connection, and will repeat for every node.
-        return getattr(exc, "kube_status", None) in (401, 403)
+        # No status at all means no HTTP response (TLS failure, a request the
+        # SDK could not build): nothing about any one node was learned, and it
+        # repeats identically for every node, like a connection error.
+        return exc.kube_status in (401, 403) or exc.kube_status is None
 
     def _batch_set_unschedulable(
         self,
@@ -328,15 +334,22 @@ class NodeService:
             ) as exc:
                 if self._is_cluster_level(exc):
                     raise
-                # NodeNotFoundException carries no kube_status of its own — it is
-                # only ever raised on a 404, so fall back to the app-level status.
+                # NodeNotFoundException / NodeNotReadyException carry no
+                # kube_status of their own (each is raised on one known status),
+                # so they fall back to the app-level status. A KubeApiException
+                # reports exactly what the API server said — None included,
+                # rather than a fabricated 502.
                 results.append(
                     BatchNodeResult(
                         node=node_name,
                         status="failed",
                         error_code=str(exc.error_code),
                         message=str(exc),
-                        kube_status=getattr(exc, "kube_status", None) or exc.http_status,
+                        kube_status=(
+                            exc.kube_status
+                            if isinstance(exc, KubeApiException)
+                            else exc.http_status
+                        ),
                     )
                 )
 

@@ -250,6 +250,26 @@ def test_api_error_becomes_kube_api_exception_with_upstream_status():
     assert exc_info.value.http_status == 403
 
 
+def test_listing_with_no_status_is_a_502_kube_api_error():
+    kube = MagicMock()
+    kube.list_namespaced_config_map.side_effect = ApiException(reason="no response")
+
+    with pytest.raises(KubeApiException) as exc_info:
+        _list(kube)
+    assert exc_info.value.http_status == 502
+    assert exc_info.value.kube_status is None
+
+
+def test_content_read_with_no_status_is_a_502_kube_api_error():
+    kube = MagicMock()
+    kube.read_namespaced_config_map.side_effect = ApiException(reason="no response")
+
+    with pytest.raises(KubeApiException) as exc_info:
+        _read(kube)
+    assert exc_info.value.http_status == 502
+    assert exc_info.value.kube_status is None
+
+
 def test_network_error_is_a_cluster_level_503():
     kube = MagicMock()
     kube.list_config_map_for_all_namespaces.side_effect = Urllib3HTTPError("refused")
