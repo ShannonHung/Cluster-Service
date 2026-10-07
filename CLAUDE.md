@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `cluster-service` is one of two FastAPI sub-projects under `antigravity-fastapi/` (the other is `deploy-service/`). This service has three responsibilities:
 
-1. **Kubernetes cluster operations** — list clusters, list/get nodes, cordon, uncordon, drain, label, annotate. Talks directly to multiple Kubernetes clusters via the `kubernetes` SDK.
+1. **Kubernetes cluster operations** — list clusters, list/get nodes, cordon, uncordon, drain, label, annotate, list pods, list ConfigMaps, read a ConfigMap's content. Talks directly to multiple Kubernetes clusters via the `kubernetes` SDK.
 2. **Deploy-service proxy** — trigger / cancel / retry / status GitLab pipelines by forwarding to `deploy-service` over HTTP with managed bearer-token auth.
 3. **Command-execution proxy** — list available commands, run them, poll results, view live logs, and kill running commands by forwarding to `deploy-service`'s SSH command API over HTTP. The upstream identity (`cluster_proxy`) is restricted by deploy-service's per-user whitelist to **ansible commands only**.
 
@@ -53,17 +53,20 @@ router (app/api/v1/)
 For Kubernetes endpoints there is an additional indirection:
 
 ```
-router → ClusterRepository.get_kube_client_config(cluster)
-       → KubeClientFactory.get_core_v1(cfg)
-       → NodeService / ClusterManager (consume the live CoreV1Api)
+router ─ Depends(get_cluster_repo) ──────────────── the one dry-run seam for credentials
+       └─ await call_kube(repo, cluster, op) ──── one worker thread, all three steps:
+             ClusterRepository.get_kube_client_config(cluster)
+             → KubeClientFactory.get_core_v1(cfg)
+             → op(kube): NodeService / ConfigMapService consume the live CoreV1Api
 ```
 
 ### Key design points
 
 **Config / environments** (`app/core/config.py`): `APP_ENV` selects the env file. Settings loads `.env` then `.env.{APP_ENV}` (override order). `get_settings()` is `lru_cache`'d — reset it in tests with `get_settings.cache_clear()`. `KUBECONFIG_BASE_PATH`, `CORDON_LABEL_REASON`, `CORDON_LABEL_BY`, and the `DEPLOY_SERVICE_*` values are all sourced from here, never hardcoded.
 
-**Auth** (`app/core/security.py`, `app/core/dependencies.py`): JWT (HS256) + bcrypt. Use `Depends(get_current_user(["scope_name"]))` on any route. Four scopes are in use:
+**Auth** (`app/core/security.py`, `app/core/dependencies.py`): JWT (HS256) + bcrypt. Use `Depends(get_current_user(["scope_name"]))` on any route; a token must hold **every** scope listed. Five scopes are in use:
 - `cluster_api` — gates all `/api/v1/clusters/...` and `/api/v1/clusters/{cluster}/nodes/...` endpoints.
+- `configmap_read` — additionally required (with `cluster_api`) to read a ConfigMap's content. A step above cluster access, not a separate way in: listing ConfigMaps needs only `cluster_api` and never returns values (CONTEXT.md).
 - `deploy_api` — gates all `/api/v1/deploy/...` endpoints.
 - `command_api` — gates all `/api/v1/command/...` endpoints.
 - `inventory_api` — gates all `/api/v1/inventory/...` endpoints.
@@ -74,7 +77,7 @@ The `/token` OAuth2 endpoint is registered directly on the root app (not on a ve
 - `YamlClusterRepository` — `<cluster>.yaml` files (standard kubeconfig). Cluster name = filename stem.
 - `JsonClusterRepository` — `<cluster>.json` files with `{cluster_name, server, ca (base64 PEM), token}`. For service-account-style credentials when no full kubeconfig is available.
 
-Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) which `KubeClientFactory` consumes. The factory builds a **fresh** `ApiClient` + `Configuration` per call to prevent cross-cluster state pollution under concurrency — do not cache or reuse `CoreV1Api` across requests.
+Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) which `KubeClientFactory` consumes. The factory builds a **fresh** `ApiClient` + `Configuration` per call to prevent cross-cluster state pollution under concurrency — do not cache or reuse `CoreV1Api` across requests. Fresh per request means released per request: `call_kube` calls `KubeClientFactory.release` when the call returns or raises. Note `ApiClient.close()` alone releases nothing — it only shuts the `async_req` thread pool; the sockets are in `rest_client.pool_manager`, which `release` clears. A token-auth CA is written to one temp file per distinct CA and reused (`_ca_file`), never one per request.
 
 **Node operations** (`app/services/node_service.py`):
 - `cordon` / `uncordon` patch `spec.unschedulable` and nothing else. Both delegate to the shared `_patch_unschedulable` helper — keep new schedulability operations on that path rather than issuing their own patch.
@@ -82,7 +85,7 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 - **What the readiness gate is not.** `spec.unschedulable` and the Ready condition are independent: an uncordoned NotReady node takes no pods *while* NotReady, and the scheduler fills it the instant it goes Ready. A flapping node is therefore still filled during its Ready windows. The gate catches action on a stale view of the cluster, not instability — do not describe it as protecting against the latter.
 - Batch uncordon resolves readiness with **one `list_node`**, not a read per node, so the gate's cost does not scale with batch size. This adds a **`list` on nodes** RBAC requirement to that endpoint (single-node uncordon uses `read_node` and is unaffected) — a token holding only `patch` fails the batch wholesale, since 403 is cluster-level. Check `JsonClusterRepository` service-account tokens carry it. A NotReady node fails only itself even when every node in the batch fails that way: "all failed" resembles a cluster problem but is not evidence of one, and `_is_cluster_level` stays keyed on certain signals (connection errors, 401/403) rather than inference. A node absent from the listing is left to the patch so it produces a real 404 instead of a fabricated readiness verdict.
 - `cordon_many` / `uncordon_many` are the batch equivalents, both thin wrappers over `_batch_set_unschedulable`. The batch loop is **sequential** (Kubernetes has no transaction across N node patches, and a single patch is cheap) and de-duplicates node names so `results` is safe to key by name.
-- **Failure layering is the load-bearing rule for batches.** A per-node failure is collected into `results` and never aborts the batch; a *cluster*-level failure propagates as an exception so the caller sees one error instead of N identical ones. `_is_cluster_level` decides which is which: connection errors (tagged `cluster_level` by `_connection_error`) and 401/403 from the API server. When adding a new failure mode, decide which side it belongs on — getting this wrong reports "your credentials are dead" as "these 8 nodes are broken".
+- **Failure layering is the load-bearing rule for batches.** A per-node failure is collected into `results` and never aborts the batch; a *cluster*-level failure propagates as an exception so the caller sees one error instead of N identical ones. `_is_cluster_level` decides which is which: connection errors (tagged `cluster_level` by `connection_error` in `kube_errors.py`), 401/403 from the API server, and a `KubeApiException` with no `kube_status` — no HTTP response at all, which the SDK spells `status=0` for TLS failures and requests it could not build (normalised to `None` by `KubeApiException`); nothing about any one node was learned, so it repeats for every node. `NodeNotFoundException` / `NodeNotReadyException` also carry no `kube_status` but stay per-node: the rule keys on a status-less *API* failure, not a missing attribute. When adding a new failure mode, decide which side it belongs on — getting this wrong reports "your credentials are dead" as "these 8 nodes are broken".
 - `drain` always skips DaemonSet pods, mirror/static pods, and completed/failed pods (not user-configurable). Eviction honours PDBs by default; pass `disable_eviction=true` in `DrainOptions` to bypass with a raw delete. `dry_run` is resolved at the router layer and never reaches the service.
 - **Drain refuses before it evicts.** Unmanaged pods (no `ownerReferences`) and emptyDir pods are *protected*: without `force` / `delete_emptydir_data` the whole drain returns 400 `DRAIN_BLOCKED` naming every blocked pod and every option needed, having evicted nothing. The node does stay cordoned — deliberately, so a corrected retry has nothing to redo (ADR 0001). Partial drains are not a thing — evicted pods cannot be recalled, so a half-drained node is worse than an untouched one. The always-skipped categories are checked first, so a DaemonSet pod using emptyDir is skipped, never blocked.
 - **Outliving the drain wait budget is not an error.** `DRAIN_DEFAULT_TIMEOUT_SECONDS` bounds how long drain *watches*, not what it asks for. When it expires, drain returns 200 with `still_terminating`, `node_emptied` and `forced_deletion` — every eviction was accepted, and a pod with a long `terminationGracePeriodSeconds` is behaving as configured. There is no `DrainTimeoutException`; see `docs/adr/0001-*`.
@@ -96,7 +99,7 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 **Command-service client** (`app/clients/command_service_client.py` + `app/services/command_service.py`): same pattern as the pipeline proxy — reuses the shared `DeployServiceTokenManager` singleton (upstream identity `cluster_proxy`). The HTML log viewer (`/execution/{id}/view`) is served locally and polls cluster-service's own `/trace/ui`, so browsers never reach deploy-service. `/view` is unauthed; `/trace/ui` uses cookie-or-header auth.
 
 **Exception hierarchy** (`app/core/exceptions.py`): All app exceptions extend `BaseAppException` (carries `http_status`, `error_code`, `log_level`, auto-detected `source_function`). The global handler in `main.py` returns `{"error": {"code": "...", "message": "..."}, "request_id": "..."}`. Notable specialisations:
-- `KubeApiException` mirrors the upstream Kubernetes status into `http_status` (falls back to 502). All `kubernetes.client.ApiException`s are caught **inside services** and re-raised as this — the router layer never sees the K8s SDK.
+- `KubeApiException` mirrors the upstream Kubernetes status into `http_status` (falls back to 502). All `kubernetes.client.ApiException`s are caught **inside services** and re-raised as this — the router layer never sees the K8s SDK. Every `CoreV1Api` call runs inside **`translate_kube_errors(cluster, what, not_found=...)`** (`app/services/kube_errors.py`), the one place the translation lives: API error → `KubeApiException("Failed to <what>: …")` with the upstream status, or `not_found()` on a 404 when the caller names the thing that can be missing; network error → cluster-level 503. A caller with a status of its own (drain: 404 = already gone, 429 = PDB refusal) catches `ApiException` inside the block and re-raises the rest — do not write a new `except ApiException` / `except Urllib3HTTPError` pair.
 - `DeployServiceError` (extends `UpstreamServiceException`, http 502) adapts deploy-service's error body via `_DEPLOY_CODE_MAP` (body `error.code`) with `_DEPLOY_STATUS_MAP` (HTTP status) as fallback. Update both maps together when adding a new upstream code.
 - `ErrorCode` (`StrEnum`) holds all business-level codes — keep new codes there, do not hardcode strings.
 
@@ -107,9 +110,9 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 - **Always HTTP 200** when the cluster itself was reachable, even if every node failed. The status code describes the request; per-node outcomes live in `results`, with a `summary` so callers can branch on one field. 207 Multi-Status was rejected — proxies and clients handle it inconsistently.
 - Success and failure entries share **one** model (`BatchNodeResult`); success leaves the error fields unset. Don't split them into a union — it generates an awkward `anyOf` in OpenAPI-derived clients.
 - Batch size is capped at 100 by the Pydantic request model, so the bound is visible in the OpenAPI schema and an oversized batch is a 422 before any work starts.
-- Like every other node route, these run the service call through **`asyncio.to_thread`** — see below.
+- Like every other Kubernetes route, these run through **`call_kube`** (credentials, client and call in one worker thread) — see below.
 
-**Never call a Kubernetes service inline from a route.** `NodeService` is synchronous — the `kubernetes` SDK blocks on urllib3 sockets — so calling it directly from an `async def` handler holds the single event-loop thread for the whole operation, and the process answers nothing meanwhile, health checks included. Every node route therefore wraps its service call in `await asyncio.to_thread(svc.method, ...)`. This matters most for `drain`, whose wait budget is 25s (`DRAIN_DEFAULT_TIMEOUT_SECONDS`) and whose poll loop sleeps between attempts: inline, one drain could freeze the pod long enough for a liveness probe to restart it. Note the worker pool is bounded (FastAPI defaults to 40 threads), so this converts "everything freezes" into "long operations queue past 40 concurrent" — better, but not unbounded.
+**Never call a Kubernetes service inline from a route.** `NodeService` and `ConfigMapService` are synchronous — the `kubernetes` SDK blocks on urllib3 sockets — so calling it directly from an `async def` handler holds the single event-loop thread for the whole operation, and the process answers nothing meanwhile, health checks included. Resolving credentials and building the client block too (a kubeconfig read, possibly an exec credential plugin for EKS / GKE, a CA temp file), so every route goes through **`call_kube(repo, cluster, lambda kube: svc.op(..., kube=kube))`** (`app/services/kube_client.py`), which does all three in one `asyncio.to_thread` — a route never threads the pieces itself, so none can be left behind. `tests/integration/test_kube_routes_off_event_loop.py` records where each of the three ran for every Kubernetes route; add new routes to its `_ROUTES` table (a guard fails when a router taking `get_cluster_repo` is missing from it). This matters most for `drain`, whose wait budget is 25s (`DRAIN_DEFAULT_TIMEOUT_SECONDS`) and whose poll loop sleeps between attempts: inline, one drain could freeze the pod long enough for a liveness probe to restart it. Note the worker pool is bounded (FastAPI defaults to 40 threads), so this converts "everything freezes" into "long operations queue past 40 concurrent" — better, but not unbounded.
 
 **App factory** (`app/main.py`): `create_app()` returns the FastAPI instance; the module-level `app = create_app()` line is what uvicorn targets. Swagger UI / ReDoc routes are only registered when `DEBUG=true` and serve from `app/static/docs-assets/` for offline use.
 
@@ -117,11 +120,12 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 
 1. Create a router in `app/api/v1/`.
 2. Annotate route deps with `Depends(get_current_user(["cluster_api"]))` (or the correct scope).
-3. For Kubernetes endpoints: depend on `_get_cluster_repo` → `repo.get_kube_client_config(cluster)` → `KubeClientFactory().get_core_v1(cfg)`, then pass the `CoreV1Api` into the service. **Do not import the `kubernetes` SDK from a router.**
+3. For Kubernetes endpoints: take `repo: ClusterRepository = Depends(get_cluster_repo)` (`app/core/dependencies.py` — the one dry-run seam for credentials; never build a repository in a router) and run the service through `await call_kube(repo, cluster, lambda kube: ...)`. **Do not import the `kubernetes` SDK from a router.**
 4. Mount the router in `app/api/router.py`.
 5. Add the scope to the relevant entries in `data/users.json`.
-6. Wrap the service call in `await asyncio.to_thread(...)` — see **Never call a Kubernetes service inline from a route** above.
+6. Never `asyncio.to_thread` the pieces yourself — `call_kube` (step 3) runs credentials, client and call together off the event loop; add the route to `_ROUTES` in `tests/integration/test_kube_routes_off_event_loop.py`. See **Never call a Kubernetes service inline from a route** above.
 7. If the endpoint acts on many resources at once, follow the **Batch endpoints** conventions above — colon-suffix route, always-200 partial-success envelope, and a size cap on the request model.
+8. If it calls a `CoreV1Api` method not used before, map it in `_PERMISSIONS` in `tests/unit/test_rbac_reference.py`, grant it in `docs/rbac/cluster-service-clusterrole.yaml` (comment which endpoint needs it), and add a row to the README's **Kubernetes Permissions** table. Local k3d runs on an admin kubeconfig, so that test is the only thing that notices a missing grant before production returns 403 — and it covers `CoreV1Api` only; using another API class (`AppsV1Api`, …) means extending the test first.
 
 ## Dry-Run Mode
 
@@ -145,6 +149,7 @@ Only the outermost side-effecting collaborators are replaced. Everything a calle
 
 - authentication and scope checks (401 / 403), Pydantic validation (422) including the batch cap of 100, enforced before any work
 - every `NodeService` rule: the uncordon readiness gate (409 `NODE_NOT_READY`, no override), drain's refuse-before-evict (400 `DRAIN_BLOCKED`), the always-skipped pod categories, batch failure layering
+- every `ConfigMapService` rule: no value or annotation in a listing, `last-applied-configuration` stripped from content, 404 → `CONFIGMAP_NOT_FOUND`
 - `PipelineService`, `CommandService`, `InventoryProxyService`, and the `DeployServiceError` code / status mapping
 - the published contract: the OpenAPI document is identical to production's, as are the error envelope and the `X-Coordination-ID` → `request_id` round trip
 
@@ -152,9 +157,9 @@ Only the outermost side-effecting collaborators are replaced. Everything a calle
 
 ### The Kubernetes seam (T10)
 
-Two things are replaced, both *below* `NodeService`:
+Two things are replaced, both *below* the services (`NodeService`, `ConfigMapService`):
 
-- **`_get_cluster_repo`** → `DryRunClusterRepository`. Swapped first because the real repositories resolve a cluster by reading a file from `KUBECONFIG_BASE_PATH`; stubbing only the factory would still demand credentials on disk. Any cluster name resolves.
+- **`get_cluster_repo`** (`app/core/dependencies.py`, shared by every Kubernetes router) → `DryRunClusterRepository`. Swapped first because the real repositories resolve a cluster by reading a file from `KUBECONFIG_BASE_PATH`; stubbing only the factory would still demand credentials on disk. Any cluster name resolves.
 - **`KubeClientFactory.get_core_v1`** → `DryRunCoreV1Api`, a fake holding the SDK's own model objects (`V1Node`, `V1Pod`, …) rather than mocks.
 
 `NodeService` itself is untouched, so **all of its business logic still runs**: the uncordon readiness gate (allowlist — only `"Ready"` passes), drain's refuse-before-evict check, the always-skipped pod categories, and the per-node vs cluster-level failure layering in the batch endpoints. Those refusals are the assertions worth having; a router-level short-circuit would answer 200 to every one of them. `tests/integration/test_dry_run_node_routes.py` enforces this — short-circuiting `uncordon` in the router makes the two readiness tests fail.
@@ -165,6 +170,8 @@ Two details that are load-bearing rather than cosmetic:
 - **Eviction actually removes the pod.** `_wait_for_pods_gone` polls `list_pod_for_all_namespaces` until the targeted pods are gone, with a 25s budget. A fake with a fixed pod list turns every clean drain into a full-budget wait reporting `still_terminating` — a slow false failure. Removing the mutation makes the dry-run suite take ~116s instead of ~13s.
 
 The fake's pod fixture deliberately contains one of each category drain treats differently (evictable, DaemonSet, mirror, completed, unmanaged, emptyDir, plus one on another node). Dropping any of them silently stops exercising a branch.
+
+The ConfigMap fixture follows the same rule — one of each shape a caller branches on: data only, with `binaryData`, carrying `last-applied-configuration` (plus a second annotation, so stripping one is distinguishable from dropping all), and the same name in two namespaces. ConfigMaps are read-only, so unlike nodes and pods they are rebuilt on every call rather than held in mutable cluster state.
 
 ### The deploy-service seam (T9)
 

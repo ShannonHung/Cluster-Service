@@ -14,6 +14,7 @@ Response convention:
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -278,6 +279,59 @@ class PodListData(BaseModel):
     cluster: str
     namespace: str
     pods: list[PodInfo] = Field(default_factory=list)
+
+
+class ConfigMapSummary(BaseModel):
+    """One ConfigMap as a listing shows it: its shape, never its values.
+
+    Annotations are deliberately absent — ``last-applied-configuration`` holds
+    a full copy of the values, so passing annotations through would let the
+    listing (``cluster_api``) bypass the content privilege. See CONTEXT.md,
+    "ConfigMap listing".
+    """
+
+    name: str
+    namespace: str
+    keys: list[str] = Field(
+        default_factory=list,
+        description="Key names from both data and binaryData, sorted. Never values.",
+    )
+    labels: dict[str, str] = Field(default_factory=dict)
+    creation_timestamp: Optional[datetime] = None
+
+
+class ConfigMapListData(BaseModel):
+    """Response body for GET /api/v1/clusters/{cluster}/configmaps."""
+
+    cluster: str
+    namespace: str
+    configmaps: list[ConfigMapSummary] = Field(default_factory=list)
+
+
+class ConfigMapDetailData(BaseModel):
+    """Response body for GET …/namespaces/{namespace}/configmaps/{name}.
+
+    The values themselves (CONTEXT.md, "ConfigMap content"). Deliberately not
+    the full manifest: ``managedFields`` is bookkeeping noise, and the
+    ``last-applied-configuration`` annotation is stripped because it is the
+    values as of the last ``kubectl apply`` — after a ``kubectl edit`` it
+    disagrees with ``data`` and would read as a second truth.
+    """
+
+    cluster: str
+    name: str
+    namespace: str
+    labels: dict[str, str] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(
+        default_factory=dict,
+        description="All annotations except kubectl.kubernetes.io/last-applied-configuration.",
+    )
+    creation_timestamp: Optional[datetime] = None
+    data: dict[str, str] = Field(default_factory=dict)
+    binary_data: dict[str, str] = Field(
+        default_factory=dict,
+        description="binaryData as sent by Kubernetes: base64-encoded strings.",
+    )
 
 
 class NodeDetailData(BaseModel):

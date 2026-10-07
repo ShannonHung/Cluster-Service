@@ -3,11 +3,11 @@ app/services/dry_run_kube_client.py
 
 A stand-in for ``kubernetes.client.CoreV1Api`` used when ``DRY_RUN_MODE=true``.
 
-Why this seam. The node routes run:
+Why this seam. Every Kubernetes route runs, through call_kube in a worker thread:
 
     repo.get_kube_client_config(cluster)   — reads a kubeconfig from disk
     KubeClientFactory().get_core_v1(cfg)   — builds a live CoreV1Api
-    asyncio.to_thread(svc.<op>, kube=...)  — NodeService does the real work
+    svc.<op>(..., kube=kube)               — the service does the real work
 
 Dry-run replaces the first two and leaves the third completely alone, so every
 piece of business logic still executes for real: the uncordon readiness gate,
@@ -44,10 +44,14 @@ Design shared with deploy-service; see that repo's docs/arch/dry-run-mode.md.
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from kubernetes.client import (
+    V1ConfigMap,
+    V1ConfigMapList,
     V1Node,
     V1NodeCondition,
     V1NodeList,
@@ -69,6 +73,9 @@ _logger = logging.getLogger(__name__)
 # Deliberately implausible so a value that leaks into a real system fails loudly
 # rather than colliding with a genuine resource.
 _KUBELET_VERSION = "v9.99.0-dry-run"
+
+# Fixed so responses are deterministic across runs.
+_CREATED = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
 # Three nodes, chosen to exercise the readiness gate rather than just the happy
 # path: a Ready node, a NotReady one, and one whose kubelet has gone silent.
@@ -180,6 +187,61 @@ def _default_pods() -> list[V1Pod]:
     ]
 
 
+def _make_configmap(
+    name: str,
+    namespace: str = "default",
+    data: Optional[dict[str, str]] = None,
+    binary_data: Optional[dict[str, str]] = None,
+    annotations: Optional[dict[str, str]] = None,
+) -> V1ConfigMap:
+    return V1ConfigMap(
+        metadata=V1ObjectMeta(
+            name=name,
+            namespace=namespace,
+            labels={"dry-run": "true"},
+            annotations=annotations or {},
+            creation_timestamp=_CREATED,
+        ),
+        data=data,
+        binary_data=binary_data,
+    )
+
+
+def _default_configmaps() -> list[V1ConfigMap]:
+    """One ConfigMap of each shape a caller or a test branches on.
+
+    Built fresh on every call: ConfigMaps are read-only here, so there is no
+    state to share, and handing out the same objects would let one caller's
+    mutation change the next request's answer.
+    """
+    applied = {"LOG_LEVEL": "info"}
+    return [
+        _make_configmap("dry-run-app-config", data={"LOG_LEVEL": "debug", "PORT": "8080"}),
+        _make_configmap(
+            "dry-run-binary",
+            data={"README": "see cert.der"},
+            # base64 of bytes 00 01 02 — binaryData values are base64 on the wire.
+            binary_data={"cert.der": "AAEC"},
+        ),
+        # last-applied is a stale copy of the values (here it disagrees with
+        # data on purpose); the Helm annotation is one that must survive when
+        # last-applied is stripped from a content read.
+        _make_configmap(
+            "dry-run-applied",
+            data={"LOG_LEVEL": "warn"},
+            annotations={
+                "kubectl.kubernetes.io/last-applied-configuration": json.dumps(
+                    {"apiVersion": "v1", "kind": "ConfigMap", "data": applied}
+                ),
+                "meta.helm.sh/release-name": "dry-run-release",
+            },
+        ),
+        # Same name, two namespaces: two different ConfigMaps.
+        _make_configmap("dry-run-shared", namespace="default", data={"TEAM": "default"}),
+        _make_configmap("dry-run-shared", namespace="apps", data={"TEAM": "apps"}),
+    ]
+
+
 class _ClusterState:
     """The mutable contents of one dry-run cluster."""
 
@@ -215,7 +277,8 @@ class DryRunCoreV1Api:
     The surface below is exactly what NodeService touches: ``list_node``,
     ``read_node``, ``patch_node``, ``list_pod_for_all_namespaces``,
     ``list_namespaced_pod``, ``delete_namespaced_pod`` and
-    ``create_namespaced_pod_eviction``.
+    ``create_namespaced_pod_eviction`` — plus the ConfigMap reads
+    ConfigMapService makes.
     """
 
     def __init__(self, cluster: str = "dry-run-cluster") -> None:
@@ -366,6 +429,39 @@ class DryRunCoreV1Api:
         self._remove_pod(namespace, name)
         return body
 
+    # ── configmaps ────────────────────────────────────────────────────────────
+
+    def list_config_map_for_all_namespaces(self, **_kwargs: Any) -> V1ConfigMapList:
+        _logger.warning(
+            "DRY-RUN | op=kube.list_config_map_for_all_namespaces | no cluster was contacted",
+        )
+        return V1ConfigMapList(items=_default_configmaps())
+
+    def list_namespaced_config_map(self, namespace: str, **_kwargs: Any) -> V1ConfigMapList:
+        """An unknown namespace lists nothing — a real API server answers 200
+        with an empty list, not 404."""
+        _logger.warning(
+            "DRY-RUN | op=kube.list_namespaced_config_map | ns=%s | no cluster was contacted",
+            namespace,
+        )
+        return V1ConfigMapList(
+            items=[c for c in _default_configmaps() if c.metadata.namespace == namespace]
+        )
+
+    def read_namespaced_config_map(self, name: str, namespace: str, **_kwargs: Any) -> V1ConfigMap:
+        """A missing ConfigMap and a missing namespace both raise the SDK's own
+        404, as the API server does, so the CONFIGMAP_NOT_FOUND mapping runs."""
+        _logger.warning(
+            "DRY-RUN | op=kube.read_namespaced_config_map | ns=%s | name=%s | "
+            "no cluster was contacted",
+            namespace,
+            name,
+        )
+        for cm in _default_configmaps():
+            if cm.metadata.namespace == namespace and cm.metadata.name == name:
+                return cm
+        raise _not_found(f"configmap {namespace}/{name}")
+
     # ── internals ─────────────────────────────────────────────────────────────
 
     def _remove_pod(self, namespace: str, name: str) -> V1Pod:
@@ -376,8 +472,9 @@ class DryRunCoreV1Api:
 
 
 def _not_found(what: str):
-    """Build the SDK's own 404, so NodeService's ``except ApiException`` paths
-    (which map 404 → NodeNotFoundException) run exactly as in production."""
+    """Build the SDK's own 404, so translate_kube_errors' 404 mapping
+    (→ NodeNotFoundException / ConfigMapNotFoundException) runs exactly as in
+    production."""
     from kubernetes.client.exceptions import ApiException
 
     exc = ApiException(status=404, reason="Not Found")

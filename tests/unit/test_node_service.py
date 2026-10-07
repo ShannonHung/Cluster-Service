@@ -332,6 +332,69 @@ def test_drain_returns_drain_action_data_with_pod_list():
     assert result.drained_pods[0].namespace == "default"
 
 
+# Drain's own status handling, kept inside translate_kube_errors: a pod that is
+# already gone is not a failure, a PodDisruptionBudget refusal is a 409 with a
+# way out, and everything else is translated like any other Kubernetes call.
+
+
+def _drain_one_pod(kube: MagicMock, **options):
+    kube.list_pod_for_all_namespaces.side_effect = [
+        MagicMock(items=[_make_pod("app-pod", "default")]),  # listing
+        MagicMock(items=[]),                                  # wait loop
+    ]
+    return _svc().drain("test", "worker-1", kube, DrainOptions(**options))
+
+
+def test_drain_eviction_of_an_already_gone_pod_is_not_a_failure():
+    kube = _make_kube()
+    kube.create_namespaced_pod_eviction.side_effect = _api_error(404, "Not Found")
+    assert _drain_one_pod(kube).node_emptied is True
+
+
+def test_drain_deletion_of_an_already_gone_pod_is_not_a_failure():
+    kube = _make_kube()
+    kube.delete_namespaced_pod.side_effect = _api_error(404, "Not Found")
+    assert _drain_one_pod(kube, disable_eviction=True).node_emptied is True
+
+
+def test_drain_blocked_by_a_pdb_is_a_409_naming_the_way_out():
+    kube = _make_kube()
+    kube.create_namespaced_pod_eviction.side_effect = _api_error(429, "Too Many Requests")
+    with pytest.raises(KubeApiException) as exc_info:
+        _drain_one_pod(kube)
+    assert exc_info.value.http_status == 409
+    assert "PodDisruptionBudget" in str(exc_info.value)
+    assert "disable_eviction" in str(exc_info.value)
+
+
+def test_drain_other_eviction_errors_keep_the_upstream_status():
+    kube = _make_kube()
+    kube.create_namespaced_pod_eviction.side_effect = _api_error(500, "Internal")
+    with pytest.raises(KubeApiException) as exc_info:
+        _drain_one_pod(kube)
+    assert exc_info.value.http_status == 500
+    assert "default/app-pod" in str(exc_info.value)
+
+
+def test_drain_eviction_network_error_is_a_503():
+    kube = _make_kube()
+    kube.create_namespaced_pod_eviction.side_effect = Urllib3HTTPError("connection refused")
+    with pytest.raises(KubeApiException) as exc_info:
+        _drain_one_pod(kube)
+    assert exc_info.value.http_status == 503
+
+
+def test_drain_wait_loop_api_error_is_translated():
+    kube = _make_kube()
+    kube.list_pod_for_all_namespaces.side_effect = [
+        MagicMock(items=[_make_pod("app-pod", "default")]),
+        _api_error(500, "Internal"),
+    ]
+    with pytest.raises(KubeApiException) as exc_info:
+        _svc().drain("test", "worker-1", kube, DrainOptions())
+    assert exc_info.value.http_status == 500
+
+
 def test_drain_always_skips_daemonset_pods():
     """DaemonSet pods must be skipped regardless of any option."""
     kube = _make_kube()
@@ -1088,6 +1151,50 @@ def test_cordon_many_api_error_carries_underlying_status():
     assert result.summary.failed == 1
     assert result.results[0].error_code == "KUBE_API_ERROR"
     assert result.results[0].kube_status == 503
+
+
+@pytest.mark.parametrize(
+    "api_error",
+    [
+        ApiException(status=0, reason="SSLError\ncertificate verify failed"),
+        ApiException(reason="no response"),  # status=None
+    ],
+    ids=["status-0-tls", "status-none"],
+)
+def test_a_failure_with_no_http_response_is_cluster_level(api_error):
+    """No response means nothing about any one node was learned: a TLS failure
+    or a request the SDK could not build repeats identically for every node.
+    Per CONTEXT.md ("Cluster-level failure") it propagates once instead of
+    being reported as N broken nodes — the same side as a connection error."""
+    kube = _make_kube()
+    kube.patch_node.side_effect = api_error
+
+    with pytest.raises(KubeApiException) as exc_info:
+        _svc().cordon_many(cluster="test", node_names=["n1", "n2", "n3"], kube=kube)
+
+    assert exc_info.value.kube_status is None
+    assert exc_info.value.http_status == 502
+    assert kube.patch_node.call_count == 1, "the batch should stop at the first node"
+
+
+def test_a_node_not_found_is_still_per_node():
+    """NodeNotFoundException has no kube_status either — the cluster-level
+    rule must key on a status-less *API* failure, not on a missing attribute."""
+    kube = _make_kube()
+    kube.patch_node.side_effect = [_api_error(404, "Not Found"), None]
+
+    result = _svc().cordon_many(cluster="test", node_names=["n1", "n2"], kube=kube)
+    assert [r.status for r in result.results] == ["failed", "success"]
+
+
+def test_read_with_no_status_is_a_502_kube_api_error():
+    kube = _make_kube()
+    kube.read_node.side_effect = ApiException(reason="no response")
+
+    with pytest.raises(KubeApiException) as exc_info:
+        _svc().get_node(cluster="test", node_name="n1", kube=kube)
+    assert exc_info.value.http_status == 502
+    assert exc_info.value.kube_status is None
 
 
 def test_cordon_many_deduplicates_node_names():

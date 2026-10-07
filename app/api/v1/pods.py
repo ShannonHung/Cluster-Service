@@ -16,34 +16,16 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from app.core.config import get_settings
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_cluster_repo, get_current_user
 from app.domain.kubernetes_models import PodListData
 from app.domain.models import ApiResponse, User
 from app.repositories.cluster_repository import ClusterRepository
-from app.repositories.dry_run_cluster_repository import DryRunClusterRepository
-from app.repositories.yaml_cluster_repository import YamlClusterRepository
-from app.services.kube_client import KubeClientFactory
+from app.services.kube_client import call_kube
 from app.services.node_service import NodeService
 
 _logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/clusters", tags=["pods"])
-
-
-def _get_cluster_repo() -> ClusterRepository:
-    """Resolve the cluster-config source.
-
-    In dry-run this is swapped *before* any kubeconfig is read: the real
-    repositories resolve a cluster by reading a file from
-    KUBECONFIG_BASE_PATH, so stubbing only the client factory would still
-    demand credentials on disk. A dry-run instance holds none. See
-    app/repositories/dry_run_cluster_repository.py.
-    """
-    settings = get_settings()
-    if settings.DRY_RUN_MODE:
-        return DryRunClusterRepository()
-    return YamlClusterRepository(settings.KUBECONFIG_BASE_PATH)
 
 
 def _request_id(request: Request) -> str:
@@ -77,16 +59,18 @@ async def list_pods(
     node: Optional[str] = Query(None, description="Comma-separated node names."),
     status: Optional[str] = Query(None, description="Comma-separated pod phases."),
     pod_name: Optional[str] = Query(None, description="Comma-separated name prefixes."),
-    repo: ClusterRepository = Depends(_get_cluster_repo),
+    repo: ClusterRepository = Depends(get_cluster_repo),
 ) -> ApiResponse[PodListData]:
-    cfg = repo.get_kube_client_config(cluster)
-    kube = KubeClientFactory().get_core_v1(cfg)
-    data = NodeService().list_pods(
-        cluster=cluster,
-        namespace=namespace,
-        kube=kube,
-        nodes=_split_csv(node),
-        statuses=_split_csv(status),
-        name_prefixes=_split_csv(pod_name),
+    data = await call_kube(
+        repo,
+        cluster,
+        lambda kube: NodeService().list_pods(
+            cluster=cluster,
+            namespace=namespace,
+            kube=kube,
+            nodes=_split_csv(node),
+            statuses=_split_csv(status),
+            name_prefixes=_split_csv(pod_name),
+        ),
     )
     return ApiResponse(data=data, request_id=_request_id(request))
