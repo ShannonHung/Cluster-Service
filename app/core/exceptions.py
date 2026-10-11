@@ -71,6 +71,7 @@ class ErrorCode(StrEnum):
     KUBE_API_ERROR             = "KUBE_API_ERROR"
     DRAIN_BLOCKED              = "DRAIN_BLOCKED"
     NODE_NOT_READY             = "NODE_NOT_READY"
+    CONFIGMAP_NOT_FOUND        = "CONFIGMAP_NOT_FOUND"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -279,6 +280,19 @@ class NodeNotFoundException(BaseAppException):
     log_level = logging.INFO
 
 
+class ConfigMapNotFoundException(BaseAppException):
+    """Raised when a ConfigMap cannot be read because it does not exist.
+
+    The API server answers 404 for a missing namespace and a missing ConfigMap
+    alike, and telling them apart would need read access to namespaces, so the
+    message names both and leaves the caller to check which.
+    """
+
+    http_status = 404
+    error_code = ErrorCode.CONFIGMAP_NOT_FOUND
+    log_level = logging.INFO
+
+
 class NodeNotReadyException(BaseAppException):
     """Raised when uncordon is asked for a node that is not Ready.
 
@@ -329,14 +343,19 @@ class KubeApiException(BaseAppException):
     error_code = ErrorCode.KUBE_API_ERROR
     log_level = logging.ERROR
 
-    def __init__(self, message: str, *, kube_status: int = 502, **kwargs) -> None:
+    def __init__(self, message: str, *, kube_status: int | None = None, **kwargs) -> None:
         # Preserve the status the API server actually returned. It can differ
         # from http_status (which floors to 502), and callers rely on the raw
-        # value to tell a retryable 503 from a 403.
-        self.kube_status = kube_status
+        # value to tell a retryable 503 from a 403. None means no HTTP response
+        # at all: the SDK spells that status=0 (TLS failures, a request it
+        # could not build), and a bare ApiException() leaves it None. Both are
+        # normalised to None rather than invented, since no API server said
+        # anything — and NodeService treats a status-less failure as
+        # cluster-level.
+        self.kube_status = kube_status or None
         # Use the Kubernetes API status as our HTTP status when it makes sense;
         # otherwise default to 502 (bad gateway from the K8s control plane).
-        self.http_status = kube_status if kube_status >= 400 else 502
+        self.http_status = kube_status if kube_status is not None and kube_status >= 400 else 502
         super().__init__(message, **kwargs)
 
 

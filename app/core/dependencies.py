@@ -1,7 +1,8 @@
 """
 app/core/dependencies.py
 
-FastAPI dependency factory for scope-based access control.
+FastAPI dependencies shared across routers: scope-based access control, and
+the cluster-repository seam every Kubernetes route resolves its cluster through.
 
 Usage in routes:
     @router.get("/protected")
@@ -17,9 +18,13 @@ from urllib.parse import unquote
 from fastapi import Depends, Request
 from fastapi.security import OAuth2PasswordBearer
 
+from app.core.config import get_settings
 from app.core.exceptions import AuthException, ForbiddenException
 from app.core.security import decode_access_token
 from app.domain.models import User
+from app.repositories.cluster_repository import ClusterRepository
+from app.repositories.dry_run_cluster_repository import DryRunClusterRepository
+from app.repositories.yaml_cluster_repository import YamlClusterRepository
 
 # The tokenUrl must match your actual POST /token route path.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
@@ -140,3 +145,22 @@ def get_current_user_cookie_or_header(
         return User(account=account, scopes=scopes)
 
     return _dependency
+
+
+def get_cluster_repo() -> ClusterRepository:
+    """Where a Kubernetes route gets cluster credentials from — the one place
+    the dry-run switch for them lives.
+
+    In dry-run the repository is swapped *before* any kubeconfig is read: the
+    real repositories resolve a cluster by reading a file from
+    KUBECONFIG_BASE_PATH, so stubbing only the client factory would still
+    demand credentials on disk. A dry-run instance holds none. See
+    app/repositories/dry_run_cluster_repository.py.
+
+    Every router uses this one function, so a test (or the dry-run seam) that
+    overrides it reaches every route.
+    """
+    settings = get_settings()
+    if settings.DRY_RUN_MODE:
+        return DryRunClusterRepository()
+    return YamlClusterRepository(settings.KUBECONFIG_BASE_PATH)

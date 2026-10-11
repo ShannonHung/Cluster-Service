@@ -24,10 +24,10 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 
 from kubernetes.client import CoreV1Api, V1Node
 from kubernetes.client.exceptions import ApiException
-from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 from app.core.config import get_settings
 from app.core.exceptions import (
@@ -56,6 +56,7 @@ from app.domain.kubernetes_models import (
     TaintRemoveSpec,
     TaintSpec,
 )
+from app.services.kube_errors import translate_kube_errors
 
 _logger = logging.getLogger(__name__)
 
@@ -63,19 +64,14 @@ _logger = logging.getLogger(__name__)
 _MIRROR_POD_ANNOTATION = "kubernetes.io/config.mirror"
 
 
-def _connection_error(cluster: str, exc: Urllib3HTTPError) -> KubeApiException:
-    """Convert a urllib3 network error to a KubeApiException(503).
-
-    Tagged ``cluster_level`` so batch operations can tell an unreachable
-    cluster apart from a per-node failure and propagate it instead of
-    reporting it once per node.
-    """
-    err = KubeApiException(
-        f"Cannot reach cluster '{cluster}': {exc}",
-        kube_status=503,
+def _node_not_found(
+    cluster: str, node_name: str
+) -> Callable[[], NodeNotFoundException]:
+    """Builds the node's not-found exception on demand — the ``not_found``
+    factory ``translate_kube_errors`` calls on a 404."""
+    return lambda: NodeNotFoundException(
+        f"Node '{node_name}' not found in cluster '{cluster}'.",
     )
-    err.cluster_level = True
-    return err
 
 
 class NodeService:
@@ -89,15 +85,8 @@ class NodeService:
         Raises:
             KubeApiException: On Kubernetes API failure.
         """
-        try:
+        with translate_kube_errors(cluster, f"list nodes in cluster '{cluster}'"):
             node_list = kube.list_node()
-        except ApiException as exc:
-            raise KubeApiException(
-                f"Failed to list nodes in cluster '{cluster}': {exc.reason}",
-                kube_status=exc.status,
-            ) from exc
-        except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
 
         nodes = [self._node_to_info(n) for n in node_list.items]
         _logger.info("Listed %d node(s) | cluster=%s", len(nodes), cluster)
@@ -125,19 +114,13 @@ class NodeService:
         Raises:
             KubeApiException: On Kubernetes API failure.
         """
-        try:
+        with translate_kube_errors(
+            cluster, f"list pods in namespace '{namespace}' of cluster '{cluster}'"
+        ):
             if namespace == "*":
                 pod_list = kube.list_pod_for_all_namespaces()
             else:
                 pod_list = kube.list_namespaced_pod(namespace)
-        except ApiException as exc:
-            raise KubeApiException(
-                f"Failed to list pods in namespace '{namespace}' "
-                f"of cluster '{cluster}': {exc.reason}",
-                kube_status=exc.status,
-            ) from exc
-        except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
 
         node_set = set(nodes) if nodes else None
         status_set = {s.lower() for s in statuses} if statuses else None
@@ -274,9 +257,15 @@ class NodeService:
         """
         if getattr(exc, "cluster_level", False):
             return True
+        if not isinstance(exc, KubeApiException):
+            # NodeNotFound / NodeNotReady are about one node by construction.
+            return False
         # 401/403 come from the API server, so they arrive untagged — but they
         # are a property of the connection, and will repeat for every node.
-        return getattr(exc, "kube_status", None) in (401, 403)
+        # No status at all means no HTTP response (TLS failure, a request the
+        # SDK could not build): nothing about any one node was learned, and it
+        # repeats identically for every node, like a connection error.
+        return exc.kube_status in (401, 403) or exc.kube_status is None
 
     def _batch_set_unschedulable(
         self,
@@ -342,15 +331,22 @@ class NodeService:
             ) as exc:
                 if self._is_cluster_level(exc):
                     raise
-                # NodeNotFoundException carries no kube_status of its own — it is
-                # only ever raised on a 404, so fall back to the app-level status.
+                # NodeNotFoundException / NodeNotReadyException carry no
+                # kube_status of their own (each is raised on one known status),
+                # so they fall back to the app-level status. A KubeApiException
+                # reports exactly what the API server said — None included,
+                # rather than a fabricated 502.
                 results.append(
                     BatchNodeResult(
                         node=node_name,
                         status="failed",
                         error_code=str(exc.error_code),
                         message=str(exc),
-                        kube_status=getattr(exc, "kube_status", None) or exc.http_status,
+                        kube_status=(
+                            exc.kube_status
+                            if isinstance(exc, KubeApiException)
+                            else exc.http_status
+                        ),
                     )
                 )
 
@@ -403,17 +399,10 @@ class NodeService:
         )
 
         # Step 2 — collect pods assigned to this node.
-        try:
+        with translate_kube_errors(cluster, f"list pods on node '{node_name}'"):
             pod_list = kube.list_pod_for_all_namespaces(
                 field_selector=f"spec.nodeName={node_name}"
             )
-        except ApiException as exc:
-            raise KubeApiException(
-                f"Failed to list pods on node '{node_name}': {exc.reason}",
-                kube_status=exc.status,
-            ) from exc
-        except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
 
         # Step 3 — classify. Skips are unconditional; blocks are opt-out.
         pods_to_evict = []
@@ -477,6 +466,7 @@ class NodeService:
         # Step 4 — evict or delete each pod.
         for pod in pods_to_evict:
             self._evict_or_delete(
+                cluster=cluster,
                 kube=kube,
                 name=pod.metadata.name,
                 namespace=pod.metadata.namespace,
@@ -490,6 +480,7 @@ class NodeService:
         # diffing two pod listings.
         timeout_seconds = get_settings().DRAIN_DEFAULT_TIMEOUT_SECONDS
         still_present = self._wait_for_pods_gone(
+            cluster=cluster,
             kube=kube,
             node_name=node_name,
             pod_names={(p.metadata.namespace, p.metadata.name) for p in pods_to_evict},
@@ -618,19 +609,12 @@ class NodeService:
                 by_id[(s.key, s.effect)] = {"key": s.key, "value": s.value, "effect": s.effect}
 
             new_taints = list(by_id.values())
-            try:
+            with translate_kube_errors(
+                cluster,
+                f"patch taints on node '{node_name}'",
+                not_found=_node_not_found(cluster, node_name),
+            ):
                 kube.patch_node(node_name, {"spec": {"taints": new_taints}})
-            except ApiException as exc:
-                if exc.status == 404:
-                    raise NodeNotFoundException(
-                        f"Node '{node_name}' not found in cluster '{cluster}'.",
-                    ) from exc
-                raise KubeApiException(
-                    f"Failed to patch taints on node '{node_name}': {exc.reason}",
-                    kube_status=exc.status,
-                ) from exc
-            except Urllib3HTTPError as exc:
-                raise _connection_error(cluster, exc) from exc
             current = self._read_node(cluster, node_name, kube)
             _logger.info("Patched taints | cluster=%s | node=%s", cluster, node_name)
 
@@ -648,19 +632,12 @@ class NodeService:
         unschedulable: bool,
     ) -> None:
         """Patch spec.unschedulable on the node."""
-        try:
+        with translate_kube_errors(
+            cluster,
+            f"patch node '{node_name}'",
+            not_found=_node_not_found(cluster, node_name),
+        ):
             kube.patch_node(node_name, {"spec": {"unschedulable": unschedulable}})
-        except ApiException as exc:
-            if exc.status == 404:
-                raise NodeNotFoundException(
-                    f"Node '{node_name}' not found in cluster '{cluster}'.",
-                ) from exc
-            raise KubeApiException(
-                f"Failed to patch node '{node_name}': {exc.reason}",
-                kube_status=exc.status,
-            ) from exc
-        except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
 
     def _patch_labels(
         self,
@@ -682,19 +659,12 @@ class NodeService:
         if not labels:
             return False
 
-        try:
+        with translate_kube_errors(
+            cluster,
+            f"patch labels on node '{node_name}'",
+            not_found=_node_not_found(cluster, node_name),
+        ):
             kube.patch_node(node_name, {"metadata": {"labels": labels}})
-        except ApiException as exc:
-            if exc.status == 404:
-                raise NodeNotFoundException(
-                    f"Node '{node_name}' not found in cluster '{cluster}'.",
-                ) from exc
-            raise KubeApiException(
-                f"Failed to patch labels on node '{node_name}': {exc.reason}",
-                kube_status=exc.status,
-            ) from exc
-        except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
         return True
 
     def _patch_annotations(
@@ -717,19 +687,12 @@ class NodeService:
         if not annotations:
             return False
 
-        try:
+        with translate_kube_errors(
+            cluster,
+            f"patch annotations on node '{node_name}'",
+            not_found=_node_not_found(cluster, node_name),
+        ):
             kube.patch_node(node_name, {"metadata": {"annotations": annotations}})
-        except ApiException as exc:
-            if exc.status == 404:
-                raise NodeNotFoundException(
-                    f"Node '{node_name}' not found in cluster '{cluster}'.",
-                ) from exc
-            raise KubeApiException(
-                f"Failed to patch annotations on node '{node_name}': {exc.reason}",
-                kube_status=exc.status,
-            ) from exc
-        except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
         return True
 
     def _fetch_node_labels(self, cluster: str, node_name: str, kube: CoreV1Api) -> dict[str, str]:
@@ -750,33 +713,19 @@ class NodeService:
         is not about any single node — so it propagates rather than being
         recorded against whichever node happened to be first.
         """
-        try:
+        with translate_kube_errors(cluster, f"list nodes in cluster '{cluster}'"):
             node_list = kube.list_node()
-        except ApiException as exc:
-            raise KubeApiException(
-                f"Failed to list nodes in cluster '{cluster}': {exc.reason}",
-                kube_status=exc.status,
-            ) from exc
-        except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
 
         return {n.metadata.name: self._node_status(n) for n in node_list.items}
 
     def _read_node(self, cluster: str, node_name: str, kube: CoreV1Api):
         """Read a node, mapping 404 → NodeNotFoundException."""
-        try:
+        with translate_kube_errors(
+            cluster,
+            f"read node '{node_name}'",
+            not_found=_node_not_found(cluster, node_name),
+        ):
             return kube.read_node(node_name)
-        except ApiException as exc:
-            if exc.status == 404:
-                raise NodeNotFoundException(
-                    f"Node '{node_name}' not found in cluster '{cluster}'.",
-                ) from exc
-            raise KubeApiException(
-                f"Failed to read node '{node_name}': {exc.reason}",
-                kube_status=exc.status,
-            ) from exc
-        except Urllib3HTTPError as exc:
-            raise _connection_error(cluster, exc) from exc
 
     @staticmethod
     def _to_taint_spec(taint) -> TaintSpec:
@@ -785,6 +734,7 @@ class NodeService:
 
     def _evict_or_delete(
         self,
+        cluster: str,
         kube: CoreV1Api,
         name: str,
         namespace: str,
@@ -795,21 +745,15 @@ class NodeService:
 
         if options.disable_eviction:
             _logger.debug("Deleting pod | ns=%s | pod=%s", namespace, name)
-            try:
-                kube.delete_namespaced_pod(
-                    name=name, namespace=namespace, grace_period_seconds=grace,
-                )
-            except ApiException as exc:
-                if exc.status == 404:
-                    return  # already gone
-                raise KubeApiException(
-                    f"Failed to delete pod '{namespace}/{name}': {exc.reason}",
-                    kube_status=exc.status,
-                ) from exc
-            except Urllib3HTTPError as exc:
-                raise KubeApiException(
-                    f"Cannot reach cluster: {exc}", kube_status=503,
-                ) from exc
+            with translate_kube_errors(cluster, f"delete pod '{namespace}/{name}'"):
+                try:
+                    kube.delete_namespaced_pod(
+                        name=name, namespace=namespace, grace_period_seconds=grace,
+                    )
+                except ApiException as exc:
+                    if exc.status == 404:
+                        return  # already gone
+                    raise
         else:
             from kubernetes.client.models import V1DeleteOptions, V1Eviction, V1ObjectMeta
             _logger.debug("Evicting pod | ns=%s | pod=%s", namespace, name)
@@ -817,28 +761,25 @@ class NodeService:
                 metadata=V1ObjectMeta(name=name, namespace=namespace),
                 delete_options=V1DeleteOptions(grace_period_seconds=grace),
             )
-            try:
-                kube.create_namespaced_pod_eviction(name=name, namespace=namespace, body=eviction)
-            except ApiException as exc:
-                if exc.status == 404:
-                    return
-                if exc.status == 429:
-                    raise KubeApiException(
-                        f"Pod '{namespace}/{name}' cannot be evicted due to a "
-                        "PodDisruptionBudget. Use disable_eviction=true to bypass.",
-                        kube_status=409,
-                    ) from exc
-                raise KubeApiException(
-                    f"Failed to evict pod '{namespace}/{name}': {exc.reason}",
-                    kube_status=exc.status,
-                ) from exc
-            except Urllib3HTTPError as exc:
-                raise KubeApiException(
-                    f"Cannot reach cluster: {exc}", kube_status=503,
-                ) from exc
+            with translate_kube_errors(cluster, f"evict pod '{namespace}/{name}'"):
+                try:
+                    kube.create_namespaced_pod_eviction(
+                        name=name, namespace=namespace, body=eviction,
+                    )
+                except ApiException as exc:
+                    if exc.status == 404:
+                        return  # already gone
+                    if exc.status == 429:
+                        raise KubeApiException(
+                            f"Pod '{namespace}/{name}' cannot be evicted due to a "
+                            "PodDisruptionBudget. Use disable_eviction=true to bypass.",
+                            kube_status=409,
+                        ) from exc
+                    raise
 
     def _wait_for_pods_gone(
         self,
+        cluster: str,
         kube: CoreV1Api,
         node_name: str,
         pod_names: set[tuple[str, str]],
@@ -857,19 +798,12 @@ class NodeService:
         deadline = time.monotonic() + timeout_seconds
         still_present: set[tuple[str, str]] = set(pod_names)
         while True:
-            try:
+            with translate_kube_errors(
+                cluster, f"list pods on node '{node_name}' while waiting for them to drain"
+            ):
                 remaining = kube.list_pod_for_all_namespaces(
                     field_selector=f"spec.nodeName={node_name}"
                 )
-            except ApiException as exc:
-                raise KubeApiException(
-                    f"Error while waiting for pods to drain: {exc.reason}",
-                    kube_status=exc.status,
-                ) from exc
-            except Urllib3HTTPError as exc:
-                raise KubeApiException(
-                    f"Cannot reach cluster: {exc}", kube_status=503,
-                ) from exc
 
             still_present = {
                 (p.metadata.namespace, p.metadata.name)

@@ -7,7 +7,8 @@
             "deploy_api",
             "vm_api",
             "command_api",
-            "inventory_api"
+            "inventory_api",
+            "configmap_read"
         ]
     },
     {
