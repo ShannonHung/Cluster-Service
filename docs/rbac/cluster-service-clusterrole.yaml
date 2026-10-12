@@ -11,11 +11,16 @@
 # production. tests/unit/test_rbac_reference.py fails when this file and the
 # Kubernetes calls in app/services disagree, in either direction.
 #
-# A ClusterRole, not a namespaced Role: nodes are cluster-scoped, and the pod
-# and ConfigMap listings accept namespace="*".
+# Nodes and pods go in a ClusterRole: nodes are cluster-scoped, and drain
+# lists pods across every namespace. ConfigMaps do not — least privilege: they
+# are granted per namespace by a Role + RoleBinding, so the service can read
+# only the namespaces named there (here `gpu-operator`; repeat the pair for
+# each namespace to be readable). Consequence: `GET /configmaps?namespace=*`
+# needs a cluster-wide `list` and is refused with 403 under this setup; list a
+# granted namespace instead.
 #
 # The `antigravity` namespace is a placeholder — put the ServiceAccount wherever
-# suits the managed cluster, and change it in both places below.
+# suits the managed cluster, and change it in all three places below.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -57,12 +62,6 @@ rules:
   - apiGroups: [""]
     resources: ["pods/eviction"]
     verbs: ["create"]
-
-  # get  — GET /clusters/{cluster}/namespaces/{namespace}/configmaps/{name}
-  # list — GET /clusters/{cluster}/configmaps
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -72,6 +71,33 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: cluster-service
+subjects:
+  - kind: ServiceAccount
+    name: cluster-service
+    namespace: antigravity
+---
+# ConfigMaps: readable only in the namespaces that carry this Role + RoleBinding.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cluster-service-configmaps
+  namespace: gpu-operator
+rules:
+  # get  — GET /clusters/{cluster}/namespaces/gpu-operator/configmaps/{name}
+  # list — GET /clusters/{cluster}/configmaps?namespace=gpu-operator
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cluster-service-configmaps
+  namespace: gpu-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cluster-service-configmaps
 subjects:
   - kind: ServiceAccount
     name: cluster-service

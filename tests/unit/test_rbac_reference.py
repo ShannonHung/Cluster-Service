@@ -9,7 +9,8 @@ Nothing else catches drift: local k3d runs on an admin kubeconfig, so a missing
 permission passes every local test and only surfaces as a 403 in production.
 This test finds every call to a ``CoreV1Api`` method anywhere under ``app/``
 (by AST, whatever the receiver is named; dry-run fakes excluded) and compares
-the permissions they need against the ClusterRole's rules.
+the permissions they need against the rules of the ClusterRole and the
+per-namespace ConfigMap Role together.
 
 A new ``CoreV1Api`` method fails here until it is added to ``_PERMISSIONS``
 *and* granted in the reference file — that is the point. Only ``CoreV1Api`` is
@@ -22,6 +23,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
 import yaml
 from kubernetes.client import CoreV1Api
 
@@ -82,9 +84,9 @@ def _documents() -> dict[str, dict]:
     return by_kind
 
 
-def _granted() -> set[tuple[str, str]]:
+def _rules(kind: str) -> set[tuple[str, str]]:
     granted: set[tuple[str, str]] = set()
-    for rule in _documents()["ClusterRole"]["rules"]:
+    for rule in _documents()[kind]["rules"]:
         assert rule.get("apiGroups") == [""], (
             "only core-group resources are used; a rule for another API group "
             "needs its own entry in this test"
@@ -93,6 +95,11 @@ def _granted() -> set[tuple[str, str]]:
             for verb in rule["verbs"]:
                 granted.add((resource, verb))
     return granted
+
+
+def _granted() -> set[tuple[str, str]]:
+    """Cluster-wide grants plus the per-namespace ConfigMap Role."""
+    return _rules("ClusterRole") | _rules("Role")
 
 
 def test_the_scan_finds_kubernetes_calls() -> None:
@@ -119,16 +126,31 @@ def test_the_reference_grants_nothing_the_code_does_not_use() -> None:
     assert not extra, f"granted but never used: {sorted(extra)}"
 
 
-def test_the_role_is_bound_to_the_service_account() -> None:
+def test_configmaps_are_granted_per_namespace_not_cluster_wide() -> None:
+    """Least privilege: the service reads ConfigMaps only in the namespaces
+    that carry the Role. A cluster-wide grant would expose every namespace,
+    kube-system included."""
+    assert not {r for r, _ in _rules("ClusterRole")} & {"configmaps"}
+    assert {r for r, _ in _rules("Role")} == {"configmaps"}
+
+
+@pytest.mark.parametrize(
+    "binding_kind, role_kind",
+    [("ClusterRoleBinding", "ClusterRole"), ("RoleBinding", "Role")],
+)
+def test_each_role_is_bound_to_the_service_account(binding_kind, role_kind) -> None:
     docs = _documents()
     sa = docs["ServiceAccount"]
-    binding = docs["ClusterRoleBinding"]
+    binding = docs[binding_kind]
+    role = docs[role_kind]
 
     assert binding["roleRef"] == {
         "apiGroup": "rbac.authorization.k8s.io",
-        "kind": "ClusterRole",
-        "name": docs["ClusterRole"]["metadata"]["name"],
+        "kind": role_kind,
+        "name": role["metadata"]["name"],
     }
+    if role_kind == "Role":
+        assert binding["metadata"]["namespace"] == role["metadata"]["namespace"]
     assert {
         "kind": "ServiceAccount",
         "name": sa["metadata"]["name"],

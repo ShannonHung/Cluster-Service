@@ -282,7 +282,7 @@ def test_network_error_is_a_cluster_level_503():
 
 # ══ content ═══════════════════════════════════════════════════════════════════
 #
-# Reading one ConfigMap's values — a separate, higher privilege than listing
+# Reading one ConfigMap's values — more revealing than a listing
 # (CONTEXT.md, "ConfigMap content"). The scope check lives in the router; what
 # the service owns is the shape: every value, and no stale second copy of them.
 
