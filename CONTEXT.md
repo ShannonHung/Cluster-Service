@@ -80,13 +80,16 @@ namespace *and* name together: the same name in two namespaces is two different
 ConfigMaps, so a ConfigMap is never addressed by name alone.
 
 **ConfigMap listing** — Says *which* ConfigMaps exist and what shape they have
-(names, keys, labels) — never a value. Seeing that a ConfigMap exists is a
-lower privilege than seeing what it says.
+(names, keys, labels) — never a value. Seeing that a ConfigMap exists reveals
+less than seeing what it says, so an overview never carries values.
 
 **ConfigMap content** — The values themselves, for one ConfigMap at a time.
-A separate, higher privilege than listing. Annotations that carry a copy of the
-values (an earlier applied version) are not content: they may disagree with
-the current values, so they are left out rather than shown as a second truth.
+More revealing than a listing, so it is bounded where it matters: the service
+can read ConfigMaps only in namespaces its Kubernetes RBAC grants one by one
+(least privilege), and any `cluster_api` holder may read what those namespaces
+contain. Annotations that carry a copy of the values (an earlier applied
+version) are not content: they may disagree with the current values, so they
+are left out rather than shown as a second truth.
 
 **Secret** — Deliberately **not** readable through this service. Not "a
 ConfigMap with a different kind": its exposure risk is of a different order, so

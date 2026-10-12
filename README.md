@@ -169,8 +169,15 @@ POST /api/v1/auth/hash-password  {"password": "mypassword"}
 
 The credentials cluster-service uses for each managed cluster need the
 permissions below. A reference ServiceAccount + ClusterRole + ClusterRoleBinding
-lives in [`docs/rbac/cluster-service-clusterrole.yaml`](docs/rbac/cluster-service-clusterrole.yaml);
+(nodes, pods) and a Role + RoleBinding (ConfigMaps, per namespace) live in
+[`docs/rbac/cluster-service-clusterrole.yaml`](docs/rbac/cluster-service-clusterrole.yaml);
 apply it to every managed cluster and use that ServiceAccount's token.
+
+ConfigMaps follow least privilege: they are readable only in namespaces that
+carry the Role + RoleBinding (the reference uses `gpu-operator`; repeat the
+pair for each namespace to be readable). As a result `GET /configmaps?namespace=*`
+— which needs a cluster-wide `list` — is refused with **403**; list a granted
+namespace instead.
 
 > ⚠️ Local k3d uses an **admin** kubeconfig, so a missing permission never
 > fails locally — it only shows up as a 403 in production.
@@ -192,8 +199,8 @@ apply it to every managed cluster and use that ServiceAccount's token.
 | `PATCH /clusters/{cluster}/nodes/{node}/annotations` | `nodes` | `get`, `patch` |
 | `PATCH /clusters/{cluster}/nodes/{node}/taints` | `nodes` | `get`, `patch` |
 | `GET /clusters/{cluster}/pods` | `pods` | `list` |
-| `GET /clusters/{cluster}/configmaps` | `configmaps` | `list` |
-| `GET /clusters/{cluster}/namespaces/{namespace}/configmaps/{name}` | `configmaps` | `get` |
+| `GET /clusters/{cluster}/configmaps` | `configmaps` | `list` (per namespace via Role; `namespace=*` needs it cluster-wide) |
+| `GET /clusters/{cluster}/namespaces/{namespace}/configmaps/{name}` | `configmaps` | `get` (per namespace via Role) |
 
 All paths are under `/api/v1`. `GET /clusters` reads local config only and
 needs no Kubernetes permission.

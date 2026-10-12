@@ -64,9 +64,8 @@ router ─ Depends(get_cluster_repo) ──────────────�
 
 **Config / environments** (`app/core/config.py`): `APP_ENV` selects the env file. Settings loads `.env` then `.env.{APP_ENV}` (override order). `get_settings()` is `lru_cache`'d — reset it in tests with `get_settings.cache_clear()`. `KUBECONFIG_BASE_PATH`, `CORDON_LABEL_REASON`, `CORDON_LABEL_BY`, and the `DEPLOY_SERVICE_*` values are all sourced from here, never hardcoded.
 
-**Auth** (`app/core/security.py`, `app/core/dependencies.py`): JWT (HS256) + bcrypt. Use `Depends(get_current_user(["scope_name"]))` on any route; a token must hold **every** scope listed. Five scopes are in use:
-- `cluster_api` — gates all `/api/v1/clusters/...` and `/api/v1/clusters/{cluster}/nodes/...` endpoints.
-- `configmap_read` — additionally required (with `cluster_api`) to read a ConfigMap's content. A step above cluster access, not a separate way in: listing ConfigMaps needs only `cluster_api` and never returns values (CONTEXT.md).
+**Auth** (`app/core/security.py`, `app/core/dependencies.py`): JWT (HS256) + bcrypt. Use `Depends(get_current_user(["scope_name"]))` on any route; a token must hold **every** scope listed. Four scopes are in use:
+- `cluster_api` — gates all `/api/v1/clusters/...` and `/api/v1/clusters/{cluster}/nodes/...` endpoints, ConfigMap listing *and* content included. There is deliberately no separate ConfigMap scope: which namespaces' ConfigMaps can be read is bounded by the service account's Kubernetes RBAC — a namespaced Role + RoleBinding per readable namespace, never a ClusterRole grant (`docs/rbac/`, enforced by `test_configmaps_are_granted_per_namespace_not_cluster_wide`). So `GET …/configmaps?namespace=*` needs a cluster-wide `list` and returns 403 under that setup; it is kept for clusters that grant one. Listing still never returns values (CONTEXT.md).
 - `deploy_api` — gates all `/api/v1/deploy/...` endpoints.
 - `command_api` — gates all `/api/v1/command/...` endpoints.
 - `inventory_api` — gates all `/api/v1/inventory/...` endpoints.
@@ -125,7 +124,7 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 5. Add the scope to the relevant entries in `data/users.json`.
 6. Never `asyncio.to_thread` the pieces yourself — `call_kube` (step 3) runs credentials, client and call together off the event loop; add the route to `_ROUTES` in `tests/integration/test_kube_routes_off_event_loop.py`. See **Never call a Kubernetes service inline from a route** above.
 7. If the endpoint acts on many resources at once, follow the **Batch endpoints** conventions above — colon-suffix route, always-200 partial-success envelope, and a size cap on the request model.
-8. If it calls a `CoreV1Api` method not used before, map it in `_PERMISSIONS` in `tests/unit/test_rbac_reference.py`, grant it in `docs/rbac/cluster-service-clusterrole.yaml` (comment which endpoint needs it), and add a row to the README's **Kubernetes Permissions** table. Local k3d runs on an admin kubeconfig, so that test is the only thing that notices a missing grant before production returns 403 — and it covers `CoreV1Api` only; using another API class (`AppsV1Api`, …) means extending the test first.
+8. If it calls a `CoreV1Api` method not used before, map it in `_PERMISSIONS` in `tests/unit/test_rbac_reference.py`, grant it in `docs/rbac/cluster-service-clusterrole.yaml` (comment which endpoint needs it; namespaced resources that hold data, like ConfigMaps, go in a per-namespace Role, not the ClusterRole), and add a row to the README's **Kubernetes Permissions** table. Local k3d runs on an admin kubeconfig, so that test is the only thing that notices a missing grant before production returns 403 — and it covers `CoreV1Api` only; using another API class (`AppsV1Api`, …) means extending the test first.
 
 ## Dry-Run Mode
 
