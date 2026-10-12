@@ -7,9 +7,11 @@ The factory builds a fresh client per request on purpose — reuse across
 requests risks cross-cluster contamination under concurrency — so whatever a
 client holds has to be released when its request is done:
 
-- **sockets.** ``ApiClient.close()`` only shuts a thread pool that synchronous
-  calls never create; the connections live in ``rest_client.pool_manager``,
-  which must be cleared explicitly.
+- **sockets.** The connections live in ``rest_client.pool_manager``. Up to
+  SDK 35 ``ApiClient.close()`` only shuts a thread pool that synchronous calls
+  never create, so the pool must be cleared explicitly; from 37 ``close()``
+  clears it too. Clearing an empty pool is a no-op, so the tests assert it was
+  cleared, not how many times.
 - **CA files.** The SDK accepts a CA only as a file path. Writing one per
   request and never deleting it grows the temp directory without bound; the
   same CA is written once and reused instead.
@@ -76,13 +78,13 @@ def _raise(exc: Exception):
 
 async def test_the_connection_pool_is_cleared_after_the_call(built):
     await call_kube(_Repo(), "c1", lambda kube: None)
-    _pool_clear(built[0]).assert_called_once()
+    _pool_clear(built[0]).assert_called()
 
 
 async def test_the_client_is_released_even_when_the_call_raises(built):
     with pytest.raises(RuntimeError):
         await call_kube(_Repo(), "c1", lambda kube: _raise(RuntimeError("op failed")))
-    _pool_clear(built[0]).assert_called_once()
+    _pool_clear(built[0]).assert_called()
 
 
 async def test_a_failing_release_does_not_hide_the_result(built, monkeypatch):
