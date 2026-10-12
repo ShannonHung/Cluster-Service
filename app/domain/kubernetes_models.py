@@ -125,7 +125,6 @@ class NodeActionData(BaseModel):
     cluster: str
     node: str
     action: str  # "cordon" | "uncordon"
-    dry_run: bool = False
 
 
 class DrainedPodInfo(BaseModel):
