@@ -45,7 +45,14 @@ _PERMISSIONS: dict[str, tuple[str, str]] = {
     "read_namespaced_config_map": ("configmaps", "get"),
 }
 
-_CORE_V1_METHODS = {name for name in dir(CoreV1Api) if not name.startswith("_")}
+# API endpoints only. Every generated endpoint has a ``<name>_with_http_info``
+# twin; lifecycle methods such as ``close`` (public from SDK 37) do not, and
+# need no RBAC grant — counting them would flag ``ApiClient.close()`` as a call.
+_PUBLIC = {name for name in dir(CoreV1Api) if not name.startswith("_")}
+_CORE_V1_METHODS = {
+    name for name in _PUBLIC
+    if f"{name}_with_http_info" in _PUBLIC or name.endswith("_with_http_info")
+}
 
 
 def _methods_used() -> set[str]:
