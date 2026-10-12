@@ -126,10 +126,11 @@ class KubeClientFactory:
 
     @staticmethod
     def _release_pool(api_client: ApiClient) -> None:
-        # ApiClient.close() alone is not enough: it only shuts the thread pool
-        # used by async_req calls, which synchronous calls never create. The
-        # sockets to the API server live in the REST client's urllib3 pool
-        # manager, which has to be cleared.
+        # Up to SDK 35, ApiClient.close() alone is not enough: it only shuts the
+        # thread pool used by async_req calls, which synchronous calls never
+        # create. The sockets to the API server live in the REST client's
+        # urllib3 pool manager, which has to be cleared. From SDK 37 close()
+        # clears it as well; clearing twice is harmless.
         api_client.rest_client.pool_manager.clear()
         api_client.close()
 
