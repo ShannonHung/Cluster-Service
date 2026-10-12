@@ -87,7 +87,7 @@ def _token(*scopes: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-_ALL = ("cluster_api", "configmap_read", "deploy_api", "command_api", "inventory_api")
+_ALL = ("cluster_api", "deploy_api", "command_api", "inventory_api")
 
 
 def _call(client: TestClient, method: str, path: str, **kwargs):
@@ -155,18 +155,6 @@ def test_garbage_token_is_401(dry, method, path):
 )
 def test_missing_cluster_api_is_403(dry, method, path):
     resp = _call(dry, method, path, headers=_all_but("cluster_api"), json={"nodes": [_READY]})
-    assert resp.status_code == 403
-    assert resp.json()["error"]["code"] == "FORBIDDEN"
-
-
-@pytest.mark.parametrize("scopes", [("cluster_api",), ("configmap_read",)])
-def test_content_read_needs_both_scopes(dry, scopes):
-    """configmap_read is a step above cluster access, not a separate way in:
-    either scope alone is refused."""
-    resp = dry.get(
-        f"{_CLUSTER}/namespaces/default/configmaps/dry-run-app-config",
-        headers=_token(*scopes),
-    )
     assert resp.status_code == 403
     assert resp.json()["error"]["code"] == "FORBIDDEN"
 

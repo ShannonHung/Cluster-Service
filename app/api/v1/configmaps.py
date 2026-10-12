@@ -7,10 +7,11 @@ Routes:
   GET /api/v1/clusters/{cluster}/configmaps                              → list ConfigMaps (shape only, no values)
   GET /api/v1/clusters/{cluster}/namespaces/{namespace}/configmaps/{name} → read one ConfigMap's content
 
-Listing requires ``cluster_api`` and never returns a value or an annotation.
-Reading content is a separate, higher privilege (CONTEXT.md): it requires
-``cluster_api`` *and* ``configmap_read`` — a step above cluster access, not a
-separate way in.
+Both routes require ``cluster_api``. Listing never returns a value or an
+annotation. Which namespaces can be read at all is bounded by the service
+account's Kubernetes RBAC (a namespaced Role per readable namespace, see
+docs/rbac/), not by a scope here — so ``namespace=*`` needs a cluster-wide
+``list`` grant and is refused with 403 under namespaced Roles (CONTEXT.md).
 """
 
 from __future__ import annotations
@@ -52,7 +53,10 @@ def _split_csv(value: Optional[str]) -> list[str]:
         "Lists ConfigMaps in the required ``namespace`` (use ``*`` for all "
         "namespaces), optionally filtered by ``name`` (comma-separated name "
         "prefixes, OR'd). Each entry shows the ConfigMap's shape — key names, "
-        "labels, creation time — and never its values or annotations."
+        "labels, creation time — and never its values or annotations. "
+        "``*`` needs a cluster-wide ``list`` on ConfigMaps; where the service "
+        "account is granted only namespaced Roles, it is refused with 403 — "
+        "list a namespace it may read instead."
     ),
 )
 async def list_configmaps(
@@ -84,8 +88,8 @@ async def list_configmaps(
         "Returns the ConfigMap's ``data`` and ``binary_data`` (base64, as sent "
         "by Kubernetes), with its labels and annotations. The "
         "``kubectl.kubernetes.io/last-applied-configuration`` annotation is "
-        "left out: it is a stale copy of the values. Requires both "
-        "``cluster_api`` and ``configmap_read``. 404 ``CONFIGMAP_NOT_FOUND`` "
+        "left out: it is a stale copy of the values. 403 when the service "
+        "account may not read that namespace. 404 ``CONFIGMAP_NOT_FOUND`` "
         "when the ConfigMap or its namespace does not exist."
     ),
 )
@@ -93,9 +97,7 @@ async def get_configmap(
     request: Request,
     cluster: str,
     name: str,
-    current_user: Annotated[
-        User, Depends(get_current_user(["cluster_api", "configmap_read"]))
-    ],
+    current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
     namespace: str = Path(..., pattern=_NAMESPACE_PATTERN, description="Namespace ('*' is not accepted)."),
     repo: ClusterRepository = Depends(get_cluster_repo),
 ) -> ApiResponse[ConfigMapDetailData]:

@@ -5,15 +5,14 @@ Both ConfigMap routes, end to end through the real router and
 ConfigMapService, with only the cluster replaced (DRY_RUN_MODE):
 
   GET …/configmaps                                — listing (cluster_api)
-  GET …/namespaces/{namespace}/configmaps/{name}  — content (+ configmap_read)
+  GET …/namespaces/{namespace}/configmaps/{name}  — content (cluster_api)
 
 Listing is a lower privilege than reading content (CONTEXT.md), so the
 assertions that matter most are negative: no value or annotation in a listing,
 no stale last-applied copy in content. Generic 401 / 403 refusals live with
-every other router's in test_dry_run_deny_paths.py; the scope tests here are
-the ones that express the relationship between the two privileges — what
-cluster_api alone can and cannot do, and that a missing ConfigMap cannot be
-probed without configmap_read.
+every other router's in test_dry_run_deny_paths.py. Both routes need only
+cluster_api: which namespaces are readable is bounded by the service account's
+Kubernetes RBAC, which the dry-run fake does not model.
 """
 
 from __future__ import annotations
@@ -107,8 +106,7 @@ def test_marks_the_response_as_dry_run(client, headers):
 
 # ══ content: GET …/namespaces/{namespace}/configmaps/{name} ═══════════════════
 #
-# Needs cluster_api AND configmap_read: configmap_read is a step above cluster
-# access, not a separate way in. test_operator holds cluster_api only.
+# Needs cluster_api only. test_operator holds nothing else.
 
 _CONTENT = "/api/v1/clusters/any-cluster/namespaces/{ns}/configmaps/{name}"
 
@@ -177,17 +175,9 @@ def test_wildcard_namespace_is_rejected(client, headers):
     assert resp.status_code == 422
 
 
-def test_cluster_api_alone_can_list_but_not_read(client, operator_headers):
+def test_cluster_api_alone_can_list_and_read(client, operator_headers):
     listing = client.get(_URL, headers=operator_headers, params={"namespace": "*"})
     assert listing.status_code == 200
 
-    resp = client.get(_content_url("default", "dry-run-app-config"), headers=operator_headers)
-    assert resp.status_code == 403
-    assert resp.json()["error"]["code"] == "FORBIDDEN"
-
-
-def test_a_missing_configmap_is_403_not_404_without_the_scope(client, operator_headers):
-    """The scope check runs first, so a caller without configmap_read cannot
-    probe which ConfigMaps exist by telling 404 from 403."""
-    resp = client.get(_content_url("default", "no-such-configmap"), headers=operator_headers)
-    assert resp.status_code == 403
+    data = _read(client, operator_headers, "default", "dry-run-app-config")
+    assert data["name"] == "dry-run-app-config"
