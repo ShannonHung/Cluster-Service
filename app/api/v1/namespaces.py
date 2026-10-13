@@ -4,6 +4,7 @@ app/api/v1/namespaces.py
 Namespace endpoints (v1).
 
 Routes:
+  GET /api/v1/clusters/{cluster}/namespaces        → list namespaces, filtered
   GET /api/v1/clusters/{cluster}/namespaces/{name} → read one namespace
 
 Requires the ``cluster_api`` scope. Vocabulary follows CONTEXT.md, "Namespaces".
@@ -11,12 +12,12 @@ Requires the ``cluster_api`` scope. Vocabulary follows CONTEXT.md, "Namespaces".
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, Path, Request
+from fastapi import APIRouter, Depends, Path, Query, Request
 
 from app.core.dependencies import get_cluster_repo, get_current_user
-from app.domain.kubernetes_models import NamespaceDetailData
+from app.domain.kubernetes_models import NamespaceDetailData, NamespaceListData
 from app.domain.models import ApiResponse, User
 from app.repositories.cluster_repository import ClusterRepository
 from app.services.kube_client import call_kube
@@ -30,6 +31,49 @@ _NAMESPACE_PATTERN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "")
+
+
+def _split_csv(value: Optional[str]) -> list[str]:
+    """Split a comma-separated query value into a trimmed, blank-free list."""
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+@router.get(
+    "/{cluster}/namespaces",
+    response_model=ApiResponse[NamespaceListData],
+    summary="List namespaces",
+    description=(
+        "Lists every namespace, optionally filtered by ``name`` (comma-separated "
+        "name prefixes), ``status`` (comma-separated, ``Active`` / "
+        "``Terminating``, case-insensitive) and ``label_selector`` (evaluated by "
+        "Kubernetes). Values within a filter are OR'd, filters are AND'd. Paging "
+        "is internal: the response holds every match. An unknown status or a "
+        "malformed label selector is 422."
+    ),
+)
+async def list_namespaces(
+    request: Request,
+    cluster: str,
+    current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
+    name: Optional[str] = Query(None, description="Comma-separated name prefixes."),
+    status: Optional[str] = Query(None, description="Comma-separated phases: Active, Terminating."),
+    label_selector: Optional[str] = Query(None, description="Kubernetes label selector, e.g. team=a."),
+    repo: ClusterRepository = Depends(get_cluster_repo),
+) -> ApiResponse[NamespaceListData]:
+    data = await call_kube(
+        repo,
+        cluster,
+        lambda kube: NamespaceService().list_namespaces(
+            cluster=cluster,
+            kube=kube,
+            name_prefixes=_split_csv(name),
+            statuses=_split_csv(status),
+            label_selector=label_selector or None,
+        ),
+    )
+    return ApiResponse(data=data, request_id=_request_id(request))
 
 
 @router.get(

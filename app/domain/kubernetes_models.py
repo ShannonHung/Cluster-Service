@@ -333,6 +333,22 @@ class ConfigMapDetailData(BaseModel):
     )
 
 
+class NamespaceSummary(BaseModel):
+    """One namespace as a listing shows it."""
+
+    name: str
+    status: str = Field(description="Namespace phase: Active or Terminating.")
+    labels: dict[str, str] = Field(default_factory=dict)
+    creation_timestamp: Optional[datetime] = None
+
+
+class NamespaceListData(BaseModel):
+    """Response body for GET /api/v1/clusters/{cluster}/namespaces."""
+
+    cluster: str
+    namespaces: list[NamespaceSummary] = Field(default_factory=list)
+
+
 class NamespaceDetailData(BaseModel):
     """Response body for GET /api/v1/clusters/{cluster}/namespaces/{name}.
 

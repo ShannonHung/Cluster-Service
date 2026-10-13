@@ -23,6 +23,7 @@ Route layout:
   GET  /api/v1/clusters/{cluster}/pods                         → List pods in a namespace (filtered)
   GET  /api/v1/clusters/{cluster}/configmaps                   → List ConfigMaps (shape only, no values)
   GET  /api/v1/clusters/{cluster}/namespaces/{ns}/configmaps/{name} → Read one ConfigMap's content
+  GET  /api/v1/clusters/{cluster}/namespaces                   → List namespaces (filtered)
   GET  /api/v1/clusters/{cluster}/namespaces/{name}            → Read one namespace
   PATCH /api/v1/clusters/{cluster}/nodes/{node}/taints         → Set or remove node taints
   GET  /api/v1/inventory/nodes/{node_name}                    → Cluster node lookup (proxy)

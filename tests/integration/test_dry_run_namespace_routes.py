@@ -72,3 +72,39 @@ def test_a_missing_namespace_is_404(client, headers):
 
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "NAMESPACE_NOT_FOUND"
+
+
+# ── listing ───────────────────────────────────────────────────────────────────
+
+
+def _list(client, headers, **params) -> list[str]:
+    resp = client.get(_URL, headers=headers, params=params)
+    assert resp.status_code == 200, resp.text
+    return [n["name"] for n in resp.json()["data"]["namespaces"]]
+
+
+def test_lists_every_namespace(client, headers):
+    names = _list(client, headers)
+    assert {"default", "kube-system", "dry-run-apps", "dry-run-terminating"} <= set(names)
+
+
+def test_lists_by_comma_separated_name_prefixes(client, headers):
+    assert set(_list(client, headers, name="kube-,dry-run-a")) == {"kube-system", "dry-run-apps"}
+
+
+def test_lists_by_status(client, headers):
+    assert _list(client, headers, status="terminating") == ["dry-run-terminating"]
+
+
+def test_lists_by_label_selector(client, headers):
+    assert _list(client, headers, label_selector="kubernetes.io/metadata.name=default") == ["default"]
+
+
+def test_an_unknown_status_is_422(client, headers):
+    resp = client.get(_URL, headers=headers, params={"status": "Deleted"})
+    assert resp.status_code == 422
+
+
+def test_a_malformed_label_selector_is_422(client, headers):
+    resp = client.get(_URL, headers=headers, params={"label_selector": "=oops"})
+    assert resp.status_code == 422

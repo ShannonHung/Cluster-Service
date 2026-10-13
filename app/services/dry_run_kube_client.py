@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -53,6 +54,7 @@ from kubernetes.client import (
     V1ConfigMap,
     V1ConfigMapList,
     V1Namespace,
+    V1NamespaceList,
     V1NamespaceStatus,
     V1Node,
     V1NodeCondition,
@@ -511,6 +513,26 @@ class DryRunCoreV1Api:
 
     # ── namespaces ────────────────────────────────────────────────────────────
 
+    def list_namespace(
+        self, label_selector: Optional[str] = None, **_kwargs: Any
+    ) -> V1NamespaceList:
+        """Honours equality selectors (``k=v``, ``k==v``, ``k!=v``) and bare
+        existence (``k``, ``!k``); anything else is the SDK's own 400, as a
+        real API server answers a malformed selector, so the 422 mapping runs.
+        Returns one page — no continue token."""
+        _logger.warning(
+            "DRY-RUN | op=kube.list_namespace | selector=%s | no cluster was contacted",
+            label_selector,
+        )
+        items = list(_state_for(self._cluster).namespaces.values())
+        if label_selector:
+            matchers = [_label_matcher(c.strip()) for c in label_selector.split(",")]
+            items = [
+                ns for ns in items
+                if all(m(ns.metadata.labels or {}) for m in matchers)
+            ]
+        return V1NamespaceList(items=items)
+
     def read_namespace(self, name: str, **_kwargs: Any) -> V1Namespace:
         _logger.warning(
             "DRY-RUN | op=kube.read_namespace | name=%s | no cluster was contacted", name
@@ -527,6 +549,36 @@ class DryRunCoreV1Api:
             if pod.metadata.namespace == namespace and pod.metadata.name == name:
                 return self._pods.pop(index)
         raise _not_found(f"{namespace}/{name}")
+
+
+_LABEL_KEY = re.compile(r"^([a-z0-9.-]+/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$")
+
+
+def _label_matcher(clause: str):
+    """One clause of an equality-based label selector, as a predicate."""
+    for op in ("!=", "==", "="):
+        key, sep, value = clause.partition(op)
+        if sep:
+            key, value = key.strip(), value.strip()
+            if not _LABEL_KEY.match(key):
+                raise _bad_request(f"invalid label selector clause {clause!r}")
+            if op == "!=":
+                return lambda labels: labels.get(key) != value
+            return lambda labels: labels.get(key) == value
+    negate = clause.startswith("!")
+    key = clause.removeprefix("!").strip()
+    if not _LABEL_KEY.match(key):
+        raise _bad_request(f"invalid label selector clause {clause!r}")
+    return lambda labels: (key in labels) != negate
+
+
+def _bad_request(what: str):
+    """Build the SDK's own 400, as the API server answers a malformed selector."""
+    from kubernetes.client.exceptions import ApiException
+
+    exc = ApiException(status=400, reason="Bad Request")
+    exc.body = f'{{"message": "dry-run: {what}"}}'
+    return exc
 
 
 def _not_found(what: str):

@@ -57,6 +57,7 @@ _ROUTES = [
     ("pods", "get", f"{_CLUSTER}/pods", {"namespace": "*"}, None),
     ("configmaps", "get", f"{_CLUSTER}/configmaps", {"namespace": "*"}, None),
     ("configmaps", "get", f"{_CLUSTER}/namespaces/default/configmaps/dry-run-app-config", {}, None),
+    ("namespaces", "get", f"{_CLUSTER}/namespaces", {}, None),
     ("namespaces", "get", f"{_CLUSTER}/namespaces/default", {}, None),
 ]
 
