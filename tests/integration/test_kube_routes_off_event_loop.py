@@ -59,6 +59,7 @@ _ROUTES = [
     ("configmaps", "get", f"{_CLUSTER}/namespaces/default/configmaps/dry-run-app-config", {}, None),
     ("namespaces", "get", f"{_CLUSTER}/namespaces", {}, None),
     ("namespaces", "get", f"{_CLUSTER}/namespaces/default", {}, None),
+    ("namespaces", "post", f"{_CLUSTER}/namespaces", {}, {"name": "off-loop-test"}),
 ]
 
 _ROUTERS = Path(__file__).resolve().parents[2] / "app" / "api" / "v1"
@@ -137,7 +138,7 @@ def test_blocking_work_runs_off_the_event_loop(
     finally:
         client.app.dependency_overrides.clear()
 
-    assert resp.status_code == 200, resp.text
+    assert resp.is_success, resp.text  # 201 for a create
     assert seen == {"credentials": False, "client": False, "kube call": False}
 
 

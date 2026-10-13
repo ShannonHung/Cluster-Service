@@ -9,6 +9,7 @@ whose deletion was requested and which is still emptying itself.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
@@ -22,7 +23,12 @@ from kubernetes.client import (
 )
 from kubernetes.client.exceptions import ApiException
 
-from app.core.exceptions import NamespaceNotFoundException, ValidationException
+from app.core.exceptions import (
+    KubeApiException,
+    NamespaceAlreadyExistsException,
+    NamespaceNotFoundException,
+    ValidationException,
+)
 from app.services.namespace_service import PAGE_SIZE, NamespaceService
 
 _CREATED = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
@@ -197,3 +203,91 @@ def test_a_malformed_label_selector_is_a_validation_error():
 
     assert info.value.http_status == 422
     assert "=oops" in info.value.message
+
+
+# ── creating ──────────────────────────────────────────────────────────────────
+
+
+def _create(kube: MagicMock, name: str = "team-a"):
+    return NamespaceService().create_namespace(
+        cluster="c1", name=name, user="alice", kube=kube
+    )
+
+
+def test_creates_a_namespace_carrying_nothing_but_its_name():
+    kube = MagicMock()
+    kube.create_namespace.return_value = _ns("team-a")
+
+    result = _create(kube)
+
+    assert (result.cluster, result.name, result.status) == ("c1", "team-a", "Active")
+    body = kube.create_namespace.call_args.args[0]
+    assert body.metadata.name == "team-a"
+    # No label, no annotation of the service's own: provenance is the
+    # gateway's audit trail, not something stamped on the cluster.
+    assert not body.metadata.labels
+    assert not body.metadata.annotations
+
+
+def test_a_creation_is_logged_with_who_asked(caplog):
+    kube = MagicMock()
+    kube.create_namespace.return_value = _ns("team-a")
+
+    with caplog.at_level(logging.INFO, logger="app.services.namespace_service"):
+        _create(kube)
+
+    line = next(r.getMessage() for r in caplog.records if "Created namespace" in r.getMessage())
+    assert "cluster=c1" in line and "name=team-a" in line and "user=alice" in line
+
+
+def _conflict(kube: MagicMock, existing: V1Namespace) -> None:
+    kube.create_namespace.side_effect = ApiException(status=409, reason="Conflict")
+    kube.read_namespace.return_value = existing
+
+
+def test_an_existing_name_is_namespace_already_exists():
+    kube = MagicMock()
+    _conflict(kube, _ns("team-a"))
+
+    with pytest.raises(NamespaceAlreadyExistsException) as info:
+        _create(kube)
+
+    assert info.value.http_status == 409
+    assert info.value.error_code == "NAMESPACE_ALREADY_EXISTS"
+    assert info.value.detail["status"] == "Active"
+    assert "already exists" in info.value.message
+
+
+def test_a_terminating_namespace_is_reported_as_being_deleted():
+    """Told apart by the namespace's phase, never by Kubernetes' message text."""
+    kube = MagicMock()
+    _conflict(kube, _ns("team-a", phase="Terminating", deletion_timestamp=_DELETED))
+
+    with pytest.raises(NamespaceAlreadyExistsException) as info:
+        _create(kube)
+
+    assert info.value.error_code == "NAMESPACE_ALREADY_EXISTS"
+    assert info.value.detail["status"] == "Terminating"
+    assert "being deleted" in info.value.message
+    kube.read_namespace.assert_called_once_with("team-a")
+
+
+def test_a_namespace_gone_between_the_conflict_and_the_read_still_conflicts():
+    kube = MagicMock()
+    kube.create_namespace.side_effect = ApiException(status=409, reason="Conflict")
+    kube.read_namespace.side_effect = ApiException(status=404, reason="Not Found")
+
+    with pytest.raises(NamespaceAlreadyExistsException) as info:
+        _create(kube)
+
+    assert info.value.detail["status"] is None
+
+
+def test_any_other_failure_is_a_kube_api_error():
+    kube = MagicMock()
+    kube.create_namespace.side_effect = ApiException(status=403, reason="Forbidden")
+
+    with pytest.raises(KubeApiException) as info:
+        _create(kube)
+
+    assert info.value.kube_status == 403

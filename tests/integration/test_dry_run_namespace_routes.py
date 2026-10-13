@@ -108,3 +108,85 @@ def test_an_unknown_status_is_422(client, headers):
 def test_a_malformed_label_selector_is_422(client, headers):
     resp = client.get(_URL, headers=headers, params={"label_selector": "=oops"})
     assert resp.status_code == 422
+
+
+# ── creating ──────────────────────────────────────────────────────────────────
+
+
+def _create(client, headers, body):
+    return client.post(_URL, headers=headers, json=body)
+
+
+def test_creates_a_namespace_then_reads_and_lists_it(client, headers):
+    resp = _create(client, headers, {"name": "team-a"})
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["data"]["name"] == "team-a"
+    assert resp.json()["data"]["status"] == "Active"
+    assert client.get(f"{_URL}/team-a", headers=headers).status_code == 200
+    assert "team-a" in _list(client, headers)
+
+
+def test_a_created_namespace_carries_nothing_from_the_service(client, headers):
+    data = _create(client, headers, {"name": "team-a"}).json()["data"]
+
+    assert data["annotations"] == {}
+    # Kubernetes itself labels every namespace with its own name; nothing else.
+    assert set(data["labels"]) <= {"kubernetes.io/metadata.name"}
+
+
+def test_creating_the_same_name_twice_is_409(client, headers):
+    _create(client, headers, {"name": "team-a"})
+    resp = _create(client, headers, {"name": "team-a"})
+
+    assert resp.status_code == 409
+    error = resp.json()["error"]
+    assert error["code"] == "NAMESPACE_ALREADY_EXISTS"
+    assert error["detail"]["status"] == "Active"
+
+
+def test_creating_a_terminating_name_says_it_is_being_deleted(client, headers):
+    resp = _create(client, headers, {"name": "dry-run-terminating"})
+
+    assert resp.status_code == 409
+    error = resp.json()["error"]
+    assert error["code"] == "NAMESPACE_ALREADY_EXISTS"
+    assert error["detail"]["status"] == "Terminating"
+    assert "being deleted" in error["message"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"name": "team-a", "labels": {"pod-security.kubernetes.io/enforce": "privileged"}},
+        {"name": "team-a", "lables": {}},  # a typo is refused, not silently dropped
+        {},
+    ],
+    ids=["labels", "unknown-field", "no-name"],
+)
+def test_a_body_with_anything_but_a_name_is_422(client, headers, body):
+    assert _create(client, headers, body).status_code == 422
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Team-A", "team_a", "-team", "team-", "a" * 64, ""],
+    ids=["uppercase", "underscore", "leading-dash", "trailing-dash", "64-chars", "empty"],
+)
+def test_a_name_that_is_not_a_dns_label_is_422(client, headers, name):
+    assert _create(client, headers, {"name": name}).status_code == 422
+
+
+@pytest.mark.parametrize("name", ["default", "kube-system", "kube-anything"])
+def test_a_reserved_name_is_422(client, headers, name):
+    resp = _create(client, headers, {"name": name})
+    assert resp.status_code == 422
+
+
+def test_a_refused_name_never_reaches_kubernetes(client, headers):
+    _create(client, headers, {"name": "kube-new"})
+    _create(client, headers, {"name": "Bad_Name"})
+
+    names = _list(client, headers)
+    assert "kube-new" not in names
+    assert "Bad_Name" not in names

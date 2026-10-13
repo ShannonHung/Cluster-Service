@@ -1,7 +1,7 @@
 """
 app/services/namespace_service.py
 
-NamespaceService — lists and reads namespaces on a cluster.
+NamespaceService — lists, reads and creates namespaces on a cluster.
 
 Vocabulary follows CONTEXT.md, "Namespaces". The service never deletes a
 namespace: deletion takes everything inside it, irreversibly.
@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import logging
 
-from kubernetes.client import CoreV1Api, V1Namespace, V1NamespaceList
+from kubernetes.client import CoreV1Api, V1Namespace, V1NamespaceList, V1ObjectMeta
 from kubernetes.client.exceptions import ApiException
 
-from app.core.exceptions import NamespaceNotFoundException, ValidationException
+from app.core.exceptions import (
+    NamespaceAlreadyExistsException,
+    NamespaceNotFoundException,
+    ValidationException,
+)
 from app.domain.kubernetes_models import (
     NamespaceDetailData,
     NamespaceListData,
@@ -38,7 +42,36 @@ _PHASES = {"active": "Active", "terminating": "Terminating"}
 
 
 class NamespaceService:
-    """Lists namespaces and reads one namespace."""
+    """Lists namespaces, reads one, and creates one."""
+
+    def create_namespace(
+        self, cluster: str, name: str, user: str, kube: CoreV1Api
+    ) -> NamespaceDetailData:
+        """Create a namespace carrying nothing but its name.
+
+        The name is validated (DNS-1123 label, not reserved) by the request
+        model before this is called. No label or annotation of the service's
+        own is added: who created it is the API gateway's audit trail, and this
+        log line.
+
+        Raises:
+            NamespaceAlreadyExistsException: The name is taken — by a namespace
+                that is there, or by a Terminating one (CONTEXT.md), which the
+                message and ``detail["status"]`` tell apart.
+            KubeApiException: On any other Kubernetes API failure.
+        """
+        with translate_kube_errors(cluster, f"create namespace '{name}' in cluster '{cluster}'"):
+            try:
+                ns = kube.create_namespace(V1Namespace(metadata=V1ObjectMeta(name=name)))
+            except ApiException as exc:
+                if exc.status != 409:
+                    raise
+                raise self._already_exists(cluster, name, kube) from exc
+
+        _logger.info(
+            "Created namespace | cluster=%s | name=%s | user=%s", cluster, name, user
+        )
+        return _to_detail(cluster, ns)
 
     def list_namespaces(
         self,
@@ -103,18 +136,31 @@ class NamespaceService:
             ns = kube.read_namespace(name)
 
         _logger.info("Read namespace | cluster=%s | name=%s", cluster, name)
-        annotations = {
-            k: v for k, v in (ns.metadata.annotations or {}).items() if k != _LAST_APPLIED
-        }
-        return NamespaceDetailData(
-            cluster=cluster,
-            name=ns.metadata.name,
-            status=_phase(ns),
-            labels=ns.metadata.labels or {},
-            annotations=annotations,
-            creation_timestamp=ns.metadata.creation_timestamp,
-            deletion_timestamp=ns.metadata.deletion_timestamp,
-        )
+        return _to_detail(cluster, ns)
+
+    @staticmethod
+    def _already_exists(
+        cluster: str, name: str, kube: CoreV1Api
+    ) -> NamespaceAlreadyExistsException:
+        """Kubernetes answers 409 both for a namespace that is there and for a
+        Terminating one, with only its message text to tell them apart. That
+        text is not a contract, so the phase is read instead."""
+        with translate_kube_errors(cluster, f"read namespace '{name}' of cluster '{cluster}'"):
+            try:
+                phase: str | None = _phase(kube.read_namespace(name))
+            except ApiException as exc:
+                if exc.status != 404:
+                    raise
+                phase = None  # finished deleting in between; the name was still taken
+
+        if phase == "Terminating":
+            message = (
+                f"Namespace '{name}' in cluster '{cluster}' is being deleted; "
+                "its name cannot be reused until the deletion finishes."
+            )
+        else:
+            message = f"Namespace '{name}' already exists in cluster '{cluster}'."
+        return NamespaceAlreadyExistsException(message, detail={"name": name, "status": phase})
 
     @staticmethod
     def _fetch_page(
@@ -137,6 +183,21 @@ class NamespaceService:
 
 def _phase(ns: V1Namespace) -> str:
     return ns.status.phase if ns.status else ""
+
+
+def _to_detail(cluster: str, ns: V1Namespace) -> NamespaceDetailData:
+    annotations = {
+        k: v for k, v in (ns.metadata.annotations or {}).items() if k != _LAST_APPLIED
+    }
+    return NamespaceDetailData(
+        cluster=cluster,
+        name=ns.metadata.name,
+        status=_phase(ns),
+        labels=ns.metadata.labels or {},
+        annotations=annotations,
+        creation_timestamp=ns.metadata.creation_timestamp,
+        deletion_timestamp=ns.metadata.deletion_timestamp,
+    )
 
 
 def _to_summary(ns: V1Namespace) -> NamespaceSummary:

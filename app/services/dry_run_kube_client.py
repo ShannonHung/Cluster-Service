@@ -542,6 +542,24 @@ class DryRunCoreV1Api:
             raise _not_found(f"namespaces/{name}")
         return ns
 
+    def create_namespace(self, body: V1Namespace, **_kwargs: Any) -> V1Namespace:
+        """Adds the namespace to state, Active at once, so the next list or read
+        sees it. A taken name — Terminating included — is the SDK's own 409, as
+        the API server answers both, so the service's phase check runs."""
+        name = body.metadata.name
+        _logger.warning(
+            "DRY-RUN | op=kube.create_namespace | name=%s | nothing was created on "
+            "any cluster",
+            name,
+        )
+        namespaces = _state_for(self._cluster).namespaces
+        if name in namespaces:
+            raise _conflict(f"namespaces/{name}")
+        # Kubernetes labels every namespace with its own name; mirror that so a
+        # created namespace has the shape a real one does.
+        namespaces[name] = _make_namespace(name)
+        return namespaces[name]
+
     # ── internals ─────────────────────────────────────────────────────────────
 
     def _remove_pod(self, namespace: str, name: str) -> V1Pod:
@@ -578,6 +596,15 @@ def _bad_request(what: str):
 
     exc = ApiException(status=400, reason="Bad Request")
     exc.body = f'{{"message": "dry-run: {what}"}}'
+    return exc
+
+
+def _conflict(what: str):
+    """Build the SDK's own 409 AlreadyExists."""
+    from kubernetes.client.exceptions import ApiException
+
+    exc = ApiException(status=409, reason="Conflict")
+    exc.body = f'{{"message": "dry-run: {what} already exists"}}'
     return exc
 
 

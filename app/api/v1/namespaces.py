@@ -4,10 +4,13 @@ app/api/v1/namespaces.py
 Namespace endpoints (v1).
 
 Routes:
-  GET /api/v1/clusters/{cluster}/namespaces        → list namespaces, filtered
-  GET /api/v1/clusters/{cluster}/namespaces/{name} → read one namespace
+  GET  /api/v1/clusters/{cluster}/namespaces        → list namespaces, filtered
+  GET  /api/v1/clusters/{cluster}/namespaces/{name} → read one namespace
+  POST /api/v1/clusters/{cluster}/namespaces        → create a namespace
 
-Requires the ``cluster_api`` scope. Vocabulary follows CONTEXT.md, "Namespaces".
+All require the ``cluster_api`` scope. Vocabulary follows CONTEXT.md,
+"Namespaces". There is deliberately no delete: it takes everything inside the
+namespace with it, irreversibly.
 """
 
 from __future__ import annotations
@@ -17,7 +20,11 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, Path, Query, Request
 
 from app.core.dependencies import get_cluster_repo, get_current_user
-from app.domain.kubernetes_models import NamespaceDetailData, NamespaceListData
+from app.domain.kubernetes_models import (
+    NamespaceCreateRequest,
+    NamespaceDetailData,
+    NamespaceListData,
+)
 from app.domain.models import ApiResponse, User
 from app.repositories.cluster_repository import ClusterRepository
 from app.services.kube_client import call_kube
@@ -100,5 +107,37 @@ async def get_namespace(
         repo,
         cluster,
         lambda kube: NamespaceService().get_namespace(cluster=cluster, name=name, kube=kube),
+    )
+    return ApiResponse(data=data, request_id=_request_id(request))
+
+
+@router.post(
+    "/{cluster}/namespaces",
+    response_model=ApiResponse[NamespaceDetailData],
+    status_code=201,
+    summary="Create a namespace",
+    description=(
+        "Creates a namespace from a body holding only ``name`` (DNS-1123 label; "
+        "not ``default``, not ``kube-*``) — any other field, ``labels`` "
+        "included, is 422. The service adds no label or annotation of its own. "
+        "409 ``NAMESPACE_ALREADY_EXISTS`` when the name is taken; "
+        "``detail.status`` is ``Terminating`` when the existing namespace is "
+        "still being deleted. A new namespace grants the service nothing inside "
+        "it: its ConfigMaps stay unreadable until that namespace is granted."
+    ),
+)
+async def create_namespace(
+    request: Request,
+    cluster: str,
+    body: NamespaceCreateRequest,
+    current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
+    repo: ClusterRepository = Depends(get_cluster_repo),
+) -> ApiResponse[NamespaceDetailData]:
+    data = await call_kube(
+        repo,
+        cluster,
+        lambda kube: NamespaceService().create_namespace(
+            cluster=cluster, name=body.name, user=current_user.account, kube=kube
+        ),
     )
     return ApiResponse(data=data, request_id=_request_id(request))

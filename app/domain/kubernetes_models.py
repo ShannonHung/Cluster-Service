@@ -333,6 +333,42 @@ class ConfigMapDetailData(BaseModel):
     )
 
 
+# Names that belong to Kubernetes itself (CONTEXT.md, "Reserved namespace
+# name"). Fixed, not configurable.
+_RESERVED_NAMESPACE = "default"
+_RESERVED_NAMESPACE_PREFIX = "kube-"
+
+
+class NamespaceCreateRequest(BaseModel):
+    """Request body for POST /api/v1/clusters/{cluster}/namespaces.
+
+    ``extra="forbid"``: a ``labels`` field (or a typo of one) is a 422, never
+    silently dropped — a caller must not believe a label took effect, and the
+    field name stays free for a future, separately designed labels option.
+    Every check here runs before Kubernetes is called: RBAC cannot restrict a
+    ``create`` by name, so this is the only place the name is bounded.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        ...,
+        max_length=63,
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        description="DNS-1123 label. Not `default`, not starting with `kube-`.",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _not_reserved(cls, name: str) -> str:
+        if name == _RESERVED_NAMESPACE or name.startswith(_RESERVED_NAMESPACE_PREFIX):
+            raise ValueError(
+                f"'{name}' is reserved for Kubernetes "
+                f"('{_RESERVED_NAMESPACE}' and '{_RESERVED_NAMESPACE_PREFIX}*')"
+            )
+        return name
+
+
 class NamespaceSummary(BaseModel):
     """One namespace as a listing shows it."""
 

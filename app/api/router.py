@@ -25,6 +25,7 @@ Route layout:
   GET  /api/v1/clusters/{cluster}/namespaces/{ns}/configmaps/{name} → Read one ConfigMap's content
   GET  /api/v1/clusters/{cluster}/namespaces                   → List namespaces (filtered)
   GET  /api/v1/clusters/{cluster}/namespaces/{name}            → Read one namespace
+  POST /api/v1/clusters/{cluster}/namespaces                   → Create a namespace
   PATCH /api/v1/clusters/{cluster}/nodes/{node}/taints         → Set or remove node taints
   GET  /api/v1/inventory/nodes/{node_name}                    → Cluster node lookup (proxy)
   GET  /api/v1/inventory/mappings                             → Bastion-cluster mappings (proxy)

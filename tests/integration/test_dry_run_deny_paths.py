@@ -119,6 +119,7 @@ _PROTECTED = [
     ("get", f"{_CLUSTER}/namespaces/default/configmaps/dry-run-app-config"),
     ("get", f"{_CLUSTER}/namespaces"),
     ("get", f"{_CLUSTER}/namespaces/default"),
+    ("post", f"{_CLUSTER}/namespaces"),
     ("post", "/api/v1/deploy"),
     ("get", "/api/v1/deploy/1"),
     ("get", "/api/v1/command/info"),
@@ -155,12 +156,18 @@ def test_garbage_token_is_401(dry, method, path):
         ("get", f"{_CLUSTER}/namespaces/default/configmaps/dry-run-app-config"),
         ("get", f"{_CLUSTER}/namespaces"),
         ("get", f"{_CLUSTER}/namespaces/default"),
+        ("post", f"{_CLUSTER}/namespaces"),
     ],
 )
 def test_missing_cluster_api_is_403(dry, method, path):
     resp = _call(dry, method, path, headers=_all_but("cluster_api"), json={"nodes": [_READY]})
     assert resp.status_code == 403
     assert resp.json()["error"]["code"] == "FORBIDDEN"
+
+
+def test_a_403_create_created_no_namespace(dry, full):
+    dry.post(f"{_CLUSTER}/namespaces", headers=_all_but("cluster_api"), json={"name": "denied-ns"})
+    assert dry.get(f"{_CLUSTER}/namespaces/denied-ns", headers=full).status_code == 404
 
 
 def test_a_403_cordon_changed_nothing(dry, full):
@@ -224,6 +231,9 @@ def test_missing_command_api_is_403(dry, method, path):
         ("post", f"{_CLUSTER}/nodes:uncordon", {}),
         ("post", "/api/v1/deploy?action=a", {"variables": "not-a-list"}),
         ("post", "/api/v1/command/execution", {"command_name": "dry_run_ansible_ping"}),
+        ("post", f"{_CLUSTER}/namespaces", {"name": "x", "labels": {"a": "b"}}),
+        ("post", f"{_CLUSTER}/namespaces", {"name": "Not_A_DNS_Label"}),
+        ("post", f"{_CLUSTER}/namespaces", {"name": "kube-new"}),
     ],
 )
 def test_invalid_body_is_422(dry, full, method, path, body):
@@ -261,6 +271,17 @@ def test_a_batch_of_exactly_100_is_accepted(dry, full):
         json={"nodes": [_READY] + [f"node-{i}" for i in range(99)]},
     )
     assert resp.status_code == 200
+
+
+# ── 409: namespace name taken ─────────────────────────────────────────────────
+
+
+def test_creating_a_terminating_namespace_is_409_and_says_so(dry, full):
+    resp = dry.post(f"{_CLUSTER}/namespaces", headers=full, json={"name": "dry-run-terminating"})
+    assert resp.status_code == 409
+    error = resp.json()["error"]
+    assert error["code"] == "NAMESPACE_ALREADY_EXISTS"
+    assert error["detail"]["status"] == "Terminating"
 
 
 # ── 409: uncordon a NotReady node, no override ────────────────────────────────
