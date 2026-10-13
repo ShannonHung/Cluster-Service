@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `cluster-service` is one of two FastAPI sub-projects under `antigravity-fastapi/` (the other is `deploy-service/`). This service has three responsibilities:
 
-1. **Kubernetes cluster operations** — list clusters, list/get nodes, cordon, uncordon, drain, label, annotate, list pods, list ConfigMaps, read a ConfigMap's content. Talks directly to multiple Kubernetes clusters via the `kubernetes` SDK.
+1. **Kubernetes cluster operations** — list clusters, list/get nodes, cordon, uncordon, drain, label, annotate, list pods, list ConfigMaps, read a ConfigMap's content, list/get/create namespaces. Talks directly to multiple Kubernetes clusters via the `kubernetes` SDK.
 2. **Deploy-service proxy** — trigger / cancel / retry / status GitLab pipelines by forwarding to `deploy-service` over HTTP with managed bearer-token auth.
 3. **Command-execution proxy** — list available commands, run them, poll results, view live logs, and kill running commands by forwarding to `deploy-service`'s SSH command API over HTTP. The upstream identity (`cluster_proxy`) is restricted by deploy-service's per-user whitelist to **ansible commands only**.
 
@@ -57,15 +57,15 @@ router ─ Depends(get_cluster_repo) ──────────────�
        └─ await call_kube(repo, cluster, op) ──── one worker thread, all three steps:
              ClusterRepository.get_kube_client_config(cluster)
              → KubeClientFactory.get_core_v1(cfg)
-             → op(kube): NodeService / ConfigMapService consume the live CoreV1Api
+             → op(kube): NodeService / ConfigMapService / NamespaceService consume the live CoreV1Api
 ```
 
 ### Key design points
 
-**Config / environments** (`app/core/config.py`): `APP_ENV` selects the env file. Settings loads `.env` then `.env.{APP_ENV}` (override order). `get_settings()` is `lru_cache`'d — reset it in tests with `get_settings.cache_clear()`. `KUBECONFIG_BASE_PATH`, `CORDON_LABEL_REASON`, `CORDON_LABEL_BY`, and the `DEPLOY_SERVICE_*` values are all sourced from here, never hardcoded.
+**Config / environments** (`app/core/config.py`): `APP_ENV` selects the env file. Settings loads `.env` then `.env.{APP_ENV}` (override order). `get_settings()` is `lru_cache`'d — reset it in tests with `get_settings.cache_clear()`. `KUBECONFIG_BASE_PATH` and the `DEPLOY_SERVICE_*` values are all sourced from here, never hardcoded.
 
 **Auth** (`app/core/security.py`, `app/core/dependencies.py`): JWT (HS256) + bcrypt. Use `Depends(get_current_user(["scope_name"]))` on any route; a token must hold **every** scope listed. Four scopes are in use:
-- `cluster_api` — gates all `/api/v1/clusters/...` and `/api/v1/clusters/{cluster}/nodes/...` endpoints, ConfigMap listing *and* content included. There is deliberately no separate ConfigMap scope: which namespaces' ConfigMaps can be read is bounded by the service account's Kubernetes RBAC — a namespaced Role + RoleBinding per readable namespace, never a ClusterRole grant (`docs/rbac/`, enforced by `test_configmaps_are_granted_per_namespace_not_cluster_wide`). So `GET …/configmaps?namespace=*` needs a cluster-wide `list` and returns 403 under that setup; it is kept for clusters that grant one. Listing still never returns values (CONTEXT.md).
+- `cluster_api` — gates all `/api/v1/clusters/...` and `/api/v1/clusters/{cluster}/nodes/...` endpoints, ConfigMap listing *and* content included. There is deliberately no separate ConfigMap scope: which namespaces' ConfigMaps can be read is bounded by the service account's Kubernetes RBAC — a namespaced Role + RoleBinding per readable namespace, never a ClusterRole grant (`docs/rbac/`, enforced by `test_configmaps_are_granted_per_namespace_not_cluster_wide`). So `GET …/configmaps?namespace=*` needs a cluster-wide `list` and returns 403 under that setup; it is kept for clusters that grant one. Listing still never returns values (CONTEXT.md). Namespace list / get / create are `cluster_api` too.
 - `deploy_api` — gates all `/api/v1/deploy/...` endpoints.
 - `command_api` — gates all `/api/v1/command/...` endpoints.
 - `inventory_api` — gates all `/api/v1/inventory/...` endpoints.
@@ -90,6 +90,13 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 - **Outliving the drain wait budget is not an error.** `DRAIN_DEFAULT_TIMEOUT_SECONDS` bounds how long drain *watches*, not what it asks for. When it expires, drain returns 200 with `still_terminating`, `node_emptied` and `forced_deletion` — every eviction was accepted, and a pod with a long `terminationGracePeriodSeconds` is behaving as configured. There is no `DrainTimeoutException`; see `docs/adr/0001-*`.
 - `label_node` / `annotate_node` accept a `set` map and a `remove` list, then re-read the node and return the full current label/annotation state in the response.
 
+**Namespace operations** (`app/services/namespace_service.py`, vocabulary in CONTEXT.md "Namespaces"):
+- **No delete, by design.** Deleting a namespace takes everything inside it, irreversibly; it needs its own design.
+- **Create takes a name and nothing else.** `NamespaceCreateRequest` is `extra="forbid"`, so a `labels` field is 422 rather than silently dropped (a caller must not think a `pod-security.kubernetes.io/*` label took effect), and the field name stays free for a future, separately designed labels option. The DNS-1123 and reserved-name (`default`, `kube-*`, fixed list) checks live in that model, so a refused name never reaches Kubernetes — RBAC cannot restrict `create` by `resourceNames`, so this is the only place names are bounded. The service adds **no** label or annotation of its own; provenance is the API gateway's audit trail plus one INFO log line with the user.
+- **409 is told apart by phase, not message.** Kubernetes answers 409 for an existing *and* a Terminating namespace; `create_namespace` then reads the namespace and reports `detail.status` (`Active` / `Terminating` / `None` if it vanished in between). Never parse the 409's message text.
+- **A new namespace grants the service nothing inside it.** ConfigMaps there stay unreadable until the per-namespace Role is applied — do not add RoleBinding / ResourceQuota creation to `create` without a design.
+- The list status filter is an allowlist (`Active`, `Terminating`): an unknown value is 422, not a silently empty list. A label selector the API server rejects (400) becomes 422 — caller input, not a cluster fault.
+
 **Deploy-service client** (`app/clients/deploy_service_client.py` + `app/core/token_manager.py`):
 - `DeployServiceTokenManager` (subclass of abstract `TokenManager`) fetches and caches a bearer token from deploy-service's `/token` endpoint. Refresh is `asyncio.Lock`-guarded and triggers automatically 30s before expiry. There is a **module-level singleton** in `app/api/v1/deploy.py` (`_deploy_token_manager`) — do not instantiate a second one per request.
 - `DeployServiceClient._request_with_retry` retries once on 401 after forcing a token refresh, then maps any non-2xx to `DeployServiceError`.
@@ -111,7 +118,7 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 - Batch size is capped at 100 by the Pydantic request model, so the bound is visible in the OpenAPI schema and an oversized batch is a 422 before any work starts.
 - Like every other Kubernetes route, these run through **`call_kube`** (credentials, client and call in one worker thread) — see below.
 
-**Never call a Kubernetes service inline from a route.** `NodeService` and `ConfigMapService` are synchronous — the `kubernetes` SDK blocks on urllib3 sockets — so calling it directly from an `async def` handler holds the single event-loop thread for the whole operation, and the process answers nothing meanwhile, health checks included. Resolving credentials and building the client block too (a kubeconfig read, possibly an exec credential plugin for EKS / GKE, a CA temp file), so every route goes through **`call_kube(repo, cluster, lambda kube: svc.op(..., kube=kube))`** (`app/services/kube_client.py`), which does all three in one `asyncio.to_thread` — a route never threads the pieces itself, so none can be left behind. `tests/integration/test_kube_routes_off_event_loop.py` records where each of the three ran for every Kubernetes route; add new routes to its `_ROUTES` table (a guard fails when a router taking `get_cluster_repo` is missing from it). This matters most for `drain`, whose wait budget is 25s (`DRAIN_DEFAULT_TIMEOUT_SECONDS`) and whose poll loop sleeps between attempts: inline, one drain could freeze the pod long enough for a liveness probe to restart it. Note the worker pool is bounded (FastAPI defaults to 40 threads), so this converts "everything freezes" into "long operations queue past 40 concurrent" — better, but not unbounded.
+**Never call a Kubernetes service inline from a route.** `NodeService`, `ConfigMapService` and `NamespaceService` are synchronous — the `kubernetes` SDK blocks on urllib3 sockets — so calling it directly from an `async def` handler holds the single event-loop thread for the whole operation, and the process answers nothing meanwhile, health checks included. Resolving credentials and building the client block too (a kubeconfig read, possibly an exec credential plugin for EKS / GKE, a CA temp file), so every route goes through **`call_kube(repo, cluster, lambda kube: svc.op(..., kube=kube))`** (`app/services/kube_client.py`), which does all three in one `asyncio.to_thread` — a route never threads the pieces itself, so none can be left behind. `tests/integration/test_kube_routes_off_event_loop.py` records where each of the three ran for every Kubernetes route; add new routes to its `_ROUTES` table (a guard fails when a router taking `get_cluster_repo` is missing from it). This matters most for `drain`, whose wait budget is 25s (`DRAIN_DEFAULT_TIMEOUT_SECONDS`) and whose poll loop sleeps between attempts: inline, one drain could freeze the pod long enough for a liveness probe to restart it. Note the worker pool is bounded (FastAPI defaults to 40 threads), so this converts "everything freezes" into "long operations queue past 40 concurrent" — better, but not unbounded.
 
 **App factory** (`app/main.py`): `create_app()` returns the FastAPI instance; the module-level `app = create_app()` line is what uvicorn targets. Swagger UI / ReDoc routes are only registered when `DEBUG=true` and serve from `app/static/docs-assets/` for offline use.
 
@@ -149,6 +156,7 @@ Only the outermost side-effecting collaborators are replaced. Everything a calle
 - authentication and scope checks (401 / 403), Pydantic validation (422) including the batch cap of 100, enforced before any work
 - every `NodeService` rule: the uncordon readiness gate (409 `NODE_NOT_READY`, no override), drain's refuse-before-evict (400 `DRAIN_BLOCKED`), the always-skipped pod categories, batch failure layering
 - every `ConfigMapService` rule: no value or annotation in a listing, `last-applied-configuration` stripped from content, 404 → `CONFIGMAP_NOT_FOUND`
+- every `NamespaceService` rule: reserved / non-DNS-1123 names and extra body fields refused (422) before Kubernetes, 409 `NAMESPACE_ALREADY_EXISTS` told apart by phase, unknown status filter or malformed label selector → 422, 404 → `NAMESPACE_NOT_FOUND`
 - `PipelineService`, `CommandService`, `InventoryProxyService`, and the `DeployServiceError` code / status mapping
 - the published contract: the OpenAPI document is identical to production's, as are the error envelope and the `X-Coordination-ID` → `request_id` round trip
 
@@ -156,7 +164,7 @@ Only the outermost side-effecting collaborators are replaced. Everything a calle
 
 ### The Kubernetes seam (T10)
 
-Two things are replaced, both *below* the services (`NodeService`, `ConfigMapService`):
+Two things are replaced, both *below* the services (`NodeService`, `ConfigMapService`, `NamespaceService`):
 
 - **`get_cluster_repo`** (`app/core/dependencies.py`, shared by every Kubernetes router) → `DryRunClusterRepository`. Swapped first because the real repositories resolve a cluster by reading a file from `KUBECONFIG_BASE_PATH`; stubbing only the factory would still demand credentials on disk. Any cluster name resolves.
 - **`KubeClientFactory.get_core_v1`** → `DryRunCoreV1Api`, a fake holding the SDK's own model objects (`V1Node`, `V1Pod`, …) rather than mocks.
@@ -169,6 +177,8 @@ Two details that are load-bearing rather than cosmetic:
 - **Eviction actually removes the pod.** `_wait_for_pods_gone` polls `list_pod_for_all_namespaces` until the targeted pods are gone, with a 25s budget. A fake with a fixed pod list turns every clean drain into a full-budget wait reporting `still_terminating` — a slow false failure. Removing the mutation makes the dry-run suite take ~116s instead of ~13s.
 
 The fake's pod fixture deliberately contains one of each category drain treats differently (evictable, DaemonSet, mirror, completed, unmanaged, emptyDir, plus one on another node). Dropping any of them silently stops exercising a branch.
+
+The namespace fixture is mutable per-cluster state (a create must be visible to the next read): `default`, `kube-system`, `dry-run-apps` (carries `last-applied-configuration` plus a Helm annotation) and `dry-run-terminating` (Terminating — without it the "being deleted" 409 branch never fires). The fake's `list_namespace` evaluates equality / existence label selectors and answers a malformed one with the SDK's own 400.
 
 The ConfigMap fixture follows the same rule — one of each shape a caller branches on: data only, with `binaryData`, carrying `last-applied-configuration` (plus a second annotation, so stripping one is distinguishable from dropping all), and the same name in two namespaces. ConfigMaps are read-only, so unlike nodes and pods they are rebuilt on every call rather than held in mutable cluster state.
 

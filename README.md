@@ -95,6 +95,23 @@ router (app/api/v1/)
 | `GET` | `/api/v1/auth/my-scopes` | ✓ | Inspect current token scopes |
 | `POST` | `/api/v1/auth/hash-password` | ✗ | Hash a plain-text password |
 
+### Namespaces (`cluster_api`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/clusters/{cluster}/namespaces` | List namespaces; filter by `name` (prefixes), `status` (`Active` / `Terminating`), `label_selector`. Returns every match (paging is internal) |
+| `GET` | `/api/v1/clusters/{cluster}/namespaces/{name}` | Read one namespace; 404 `NAMESPACE_NOT_FOUND` |
+| `POST` | `/api/v1/clusters/{cluster}/namespaces` | Create a namespace from `{"name": "..."}` only; 201. `default` / `kube-*`, non-DNS-1123 names and any other body field (`labels` included) are 422. 409 `NAMESPACE_ALREADY_EXISTS`, with `detail.status` = `Terminating` when the existing one is still being deleted |
+
+There is no delete endpoint: deleting a namespace takes everything in it.
+The service adds no label or annotation to a namespace it creates (who created
+it is in the API gateway's audit log and an INFO log line here).
+
+> ⚠️ A new namespace grants cluster-service **nothing** inside it. Its
+> ConfigMaps stay unreadable until that namespace is given the per-namespace
+> ConfigMap Role + RoleBinding (see below) — deliberately, so creating a
+> namespace is never a way to widen what the service can read.
+
 ### Response shapes
 
 **Success:**
@@ -201,6 +218,9 @@ namespace instead.
 | `GET /clusters/{cluster}/pods` | `pods` | `list` |
 | `GET /clusters/{cluster}/configmaps` | `configmaps` | `list` (per namespace via Role; `namespace=*` needs it cluster-wide) |
 | `GET /clusters/{cluster}/namespaces/{namespace}/configmaps/{name}` | `configmaps` | `get` (per namespace via Role) |
+| `GET /clusters/{cluster}/namespaces` | `namespaces` | `list` |
+| `GET /clusters/{cluster}/namespaces/{name}` | `namespaces` | `get` |
+| `POST /clusters/{cluster}/namespaces` | `namespaces` | `create`, `get` (`get` only on 409, to tell a Terminating namespace apart) |
 
 All paths are under `/api/v1`. `GET /clusters` reads local config only and
 needs no Kubernetes permission.

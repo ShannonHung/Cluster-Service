@@ -46,12 +46,16 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from kubernetes.client import (
     V1ConfigMap,
     V1ConfigMapList,
+    V1Namespace,
+    V1NamespaceList,
+    V1NamespaceStatus,
     V1Node,
     V1NodeCondition,
     V1NodeList,
@@ -242,6 +246,48 @@ def _default_configmaps() -> list[V1ConfigMap]:
     ]
 
 
+def _make_namespace(
+    name: str,
+    phase: str = "Active",
+    annotations: Optional[dict[str, str]] = None,
+) -> V1Namespace:
+    return V1Namespace(
+        metadata=V1ObjectMeta(
+            name=name,
+            labels={"kubernetes.io/metadata.name": name},
+            annotations=annotations or {},
+            creation_timestamp=_CREATED,
+            deletion_timestamp=_CREATED if phase == "Terminating" else None,
+        ),
+        status=V1NamespaceStatus(phase=phase),
+    )
+
+
+def _default_namespaces() -> dict[str, V1Namespace]:
+    """One namespace of each shape a caller or a test branches on.
+
+    Kubernetes' own two, an ordinary Active one carrying last-applied plus a
+    second annotation (so stripping one is distinguishable from dropping all),
+    and a Terminating one (CONTEXT.md) — without it the "being deleted" branch
+    of a create could never fire.
+    """
+    namespaces = [
+        _make_namespace("default"),
+        _make_namespace("kube-system"),
+        _make_namespace(
+            "dry-run-apps",
+            annotations={
+                "kubectl.kubernetes.io/last-applied-configuration": json.dumps(
+                    {"apiVersion": "v1", "kind": "Namespace"}
+                ),
+                "meta.helm.sh/release-name": "dry-run-release",
+            },
+        ),
+        _make_namespace("dry-run-terminating", phase="Terminating"),
+    ]
+    return {ns.metadata.name: ns for ns in namespaces}
+
+
 class _ClusterState:
     """The mutable contents of one dry-run cluster."""
 
@@ -250,6 +296,9 @@ class _ClusterState:
             name: _make_node(name, ready) for name, ready in _NODE_READINESS.items()
         }
         self.pods: list[V1Pod] = _default_pods()
+        # Mutable, unlike ConfigMaps: a namespace created by one request must be
+        # there for the next.
+        self.namespaces: dict[str, V1Namespace] = _default_namespaces()
 
 
 # Shared across the per-request client instances, keyed by cluster name. A real
@@ -278,7 +327,7 @@ class DryRunCoreV1Api:
     ``read_node``, ``patch_node``, ``list_pod_for_all_namespaces``,
     ``list_namespaced_pod``, ``delete_namespaced_pod`` and
     ``create_namespaced_pod_eviction`` — plus the ConfigMap reads
-    ConfigMapService makes.
+    ConfigMapService makes and the namespace calls NamespaceService makes.
     """
 
     def __init__(self, cluster: str = "dry-run-cluster") -> None:
@@ -462,6 +511,55 @@ class DryRunCoreV1Api:
                 return cm
         raise _not_found(f"configmap {namespace}/{name}")
 
+    # ── namespaces ────────────────────────────────────────────────────────────
+
+    def list_namespace(
+        self, label_selector: Optional[str] = None, **_kwargs: Any
+    ) -> V1NamespaceList:
+        """Honours equality selectors (``k=v``, ``k==v``, ``k!=v``) and bare
+        existence (``k``, ``!k``); anything else is the SDK's own 400, as a
+        real API server answers a malformed selector, so the 422 mapping runs.
+        Returns one page — no continue token."""
+        _logger.warning(
+            "DRY-RUN | op=kube.list_namespace | selector=%s | no cluster was contacted",
+            label_selector,
+        )
+        items = list(_state_for(self._cluster).namespaces.values())
+        if label_selector:
+            matchers = [_label_matcher(c.strip()) for c in label_selector.split(",")]
+            items = [
+                ns for ns in items
+                if all(m(ns.metadata.labels or {}) for m in matchers)
+            ]
+        return V1NamespaceList(items=items)
+
+    def read_namespace(self, name: str, **_kwargs: Any) -> V1Namespace:
+        _logger.warning(
+            "DRY-RUN | op=kube.read_namespace | name=%s | no cluster was contacted", name
+        )
+        ns = _state_for(self._cluster).namespaces.get(name)
+        if ns is None:
+            raise _not_found(f"namespaces/{name}")
+        return ns
+
+    def create_namespace(self, body: V1Namespace, **_kwargs: Any) -> V1Namespace:
+        """Adds the namespace to state, Active at once, so the next list or read
+        sees it. A taken name — Terminating included — is the SDK's own 409, as
+        the API server answers both, so the service's phase check runs."""
+        name = body.metadata.name
+        _logger.warning(
+            "DRY-RUN | op=kube.create_namespace | name=%s | nothing was created on "
+            "any cluster",
+            name,
+        )
+        namespaces = _state_for(self._cluster).namespaces
+        if name in namespaces:
+            raise _conflict(f"namespaces/{name}")
+        # Kubernetes labels every namespace with its own name; mirror that so a
+        # created namespace has the shape a real one does.
+        namespaces[name] = _make_namespace(name)
+        return namespaces[name]
+
     # ── internals ─────────────────────────────────────────────────────────────
 
     def _remove_pod(self, namespace: str, name: str) -> V1Pod:
@@ -469,6 +567,45 @@ class DryRunCoreV1Api:
             if pod.metadata.namespace == namespace and pod.metadata.name == name:
                 return self._pods.pop(index)
         raise _not_found(f"{namespace}/{name}")
+
+
+_LABEL_KEY = re.compile(r"^([a-z0-9.-]+/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$")
+
+
+def _label_matcher(clause: str):
+    """One clause of an equality-based label selector, as a predicate."""
+    for op in ("!=", "==", "="):
+        key, sep, value = clause.partition(op)
+        if sep:
+            key, value = key.strip(), value.strip()
+            if not _LABEL_KEY.match(key):
+                raise _bad_request(f"invalid label selector clause {clause!r}")
+            if op == "!=":
+                return lambda labels: labels.get(key) != value
+            return lambda labels: labels.get(key) == value
+    negate = clause.startswith("!")
+    key = clause.removeprefix("!").strip()
+    if not _LABEL_KEY.match(key):
+        raise _bad_request(f"invalid label selector clause {clause!r}")
+    return lambda labels: (key in labels) != negate
+
+
+def _bad_request(what: str):
+    """Build the SDK's own 400, as the API server answers a malformed selector."""
+    from kubernetes.client.exceptions import ApiException
+
+    exc = ApiException(status=400, reason="Bad Request")
+    exc.body = f'{{"message": "dry-run: {what}"}}'
+    return exc
+
+
+def _conflict(what: str):
+    """Build the SDK's own 409 AlreadyExists."""
+    from kubernetes.client.exceptions import ApiException
+
+    exc = ApiException(status=409, reason="Conflict")
+    exc.body = f'{{"message": "dry-run: {what} already exists"}}'
+    return exc
 
 
 def _not_found(what: str):

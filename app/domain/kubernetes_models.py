@@ -333,6 +333,87 @@ class ConfigMapDetailData(BaseModel):
     )
 
 
+# A Kubernetes namespace name: a DNS-1123 label (at most 63 characters, which
+# callers bound with max_length). The one copy every router and model uses.
+NAMESPACE_NAME_PATTERN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+
+# Every phase Kubernetes gives a namespace (CONTEXT.md, "Terminating
+# namespace"). The API calls it ``status``.
+NamespacePhase = Literal["Active", "Terminating"]
+
+# Names that belong to Kubernetes itself (CONTEXT.md, "Reserved namespace
+# name"). Fixed, not configurable.
+_RESERVED_NAMESPACE = "default"
+_RESERVED_NAMESPACE_PREFIX = "kube-"
+
+
+class NamespaceCreateRequest(BaseModel):
+    """Request body for POST /api/v1/clusters/{cluster}/namespaces.
+
+    ``extra="forbid"``: a ``labels`` field (or a typo of one) is a 422, never
+    silently dropped — a caller must not believe a label took effect, and the
+    field name stays free for a future, separately designed labels option.
+    Every check here runs before Kubernetes is called: RBAC cannot restrict a
+    ``create`` by name, so this is the only place the name is bounded.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        ...,
+        max_length=63,
+        pattern=NAMESPACE_NAME_PATTERN,
+        description="DNS-1123 label. Not `default`, not starting with `kube-`.",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _not_reserved(cls, name: str) -> str:
+        if name == _RESERVED_NAMESPACE or name.startswith(_RESERVED_NAMESPACE_PREFIX):
+            raise ValueError(
+                f"'{name}' is reserved for Kubernetes "
+                f"('{_RESERVED_NAMESPACE}' and '{_RESERVED_NAMESPACE_PREFIX}*')"
+            )
+        return name
+
+
+class NamespaceSummary(BaseModel):
+    """One namespace as a listing shows it."""
+
+    name: str
+    status: NamespacePhase
+    labels: dict[str, str] = Field(default_factory=dict)
+    creation_timestamp: Optional[datetime] = None
+
+
+class NamespaceListData(BaseModel):
+    """Response body for GET /api/v1/clusters/{cluster}/namespaces."""
+
+    cluster: str
+    namespaces: list[NamespaceSummary] = Field(default_factory=list)
+
+
+class NamespaceDetailData(BaseModel):
+    """Response body for GET /api/v1/clusters/{cluster}/namespaces/{name}.
+
+    ``last-applied-configuration`` is stripped from annotations for the same
+    reason as on a ConfigMap: it is a stale copy, not the current state.
+    """
+
+    cluster: str
+    name: str
+    status: NamespacePhase
+    labels: dict[str, str] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(
+        default_factory=dict,
+        description="All annotations except kubectl.kubernetes.io/last-applied-configuration.",
+    )
+    creation_timestamp: Optional[datetime] = None
+    deletion_timestamp: Optional[datetime] = Field(
+        None, description="Set once deletion was requested — i.e. while Terminating."
+    )
+
+
 class NodeDetailData(BaseModel):
     """Full node detail (node attributes only; pods are queried separately).
 
