@@ -10,6 +10,7 @@ namespace: deletion takes everything inside it, irreversibly.
 from __future__ import annotations
 
 import logging
+from typing import get_args
 
 from kubernetes.client import CoreV1Api, V1Namespace, V1NamespaceList, V1ObjectMeta
 from kubernetes.client.exceptions import ApiException
@@ -22,6 +23,7 @@ from app.core.exceptions import (
 from app.domain.kubernetes_models import (
     NamespaceDetailData,
     NamespaceListData,
+    NamespacePhase,
     NamespaceSummary,
 )
 from app.services.kube_errors import translate_kube_errors
@@ -36,9 +38,9 @@ _LAST_APPLIED = "kubectl.kubernetes.io/last-applied-configuration"
 # sees paging: the listing follows every continue token and returns everything.
 PAGE_SIZE = 500
 
-# Every phase Kubernetes gives a namespace. An allowlist, so a typo in a filter
-# is a 422 rather than a silently empty listing.
-_PHASES = {"active": "Active", "terminating": "Terminating"}
+# Lower-cased filter value → phase. An allowlist, so a typo in a filter is a 422
+# rather than a silently empty listing.
+_PHASES: dict[str, NamespacePhase] = {p.lower(): p for p in get_args(NamespacePhase)}
 
 
 class NamespaceService:
@@ -147,7 +149,7 @@ class NamespaceService:
         text is not a contract, so the phase is read instead."""
         with translate_kube_errors(cluster, f"read namespace '{name}' of cluster '{cluster}'"):
             try:
-                phase: str | None = _phase(kube.read_namespace(name))
+                phase: NamespacePhase | None = _phase(kube.read_namespace(name))
             except ApiException as exc:
                 if exc.status != 404:
                     raise
@@ -181,8 +183,9 @@ class NamespaceService:
                 raise
 
 
-def _phase(ns: V1Namespace) -> str:
-    return ns.status.phase if ns.status else ""
+def _phase(ns: V1Namespace) -> NamespacePhase:
+    # The API server defaults a missing phase to Active.
+    return ns.status.phase if ns.status and ns.status.phase else "Active"
 
 
 def _to_detail(cluster: str, ns: V1Namespace) -> NamespaceDetailData:

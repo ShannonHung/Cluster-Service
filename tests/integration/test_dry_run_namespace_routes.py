@@ -74,6 +74,11 @@ def test_a_missing_namespace_is_404(client, headers):
     assert resp.json()["error"]["code"] == "NAMESPACE_NOT_FOUND"
 
 
+def test_reading_a_name_no_namespace_could_have_is_422(client, headers):
+    resp = client.get(f"{_URL}/Not_A_DNS_Label", headers=headers)
+    assert resp.status_code == 422
+
+
 # ── listing ───────────────────────────────────────────────────────────────────
 
 

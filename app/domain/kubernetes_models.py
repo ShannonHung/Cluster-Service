@@ -333,6 +333,14 @@ class ConfigMapDetailData(BaseModel):
     )
 
 
+# A Kubernetes namespace name: a DNS-1123 label (at most 63 characters, which
+# callers bound with max_length). The one copy every router and model uses.
+NAMESPACE_NAME_PATTERN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+
+# Every phase Kubernetes gives a namespace (CONTEXT.md, "Terminating
+# namespace"). The API calls it ``status``.
+NamespacePhase = Literal["Active", "Terminating"]
+
 # Names that belong to Kubernetes itself (CONTEXT.md, "Reserved namespace
 # name"). Fixed, not configurable.
 _RESERVED_NAMESPACE = "default"
@@ -354,7 +362,7 @@ class NamespaceCreateRequest(BaseModel):
     name: str = Field(
         ...,
         max_length=63,
-        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        pattern=NAMESPACE_NAME_PATTERN,
         description="DNS-1123 label. Not `default`, not starting with `kube-`.",
     )
 
@@ -373,7 +381,7 @@ class NamespaceSummary(BaseModel):
     """One namespace as a listing shows it."""
 
     name: str
-    status: str = Field(description="Namespace phase: Active or Terminating.")
+    status: NamespacePhase
     labels: dict[str, str] = Field(default_factory=dict)
     creation_timestamp: Optional[datetime] = None
 
@@ -394,7 +402,7 @@ class NamespaceDetailData(BaseModel):
 
     cluster: str
     name: str
-    status: str = Field(description="Namespace phase: Active or Terminating.")
+    status: NamespacePhase
     labels: dict[str, str] = Field(default_factory=dict)
     annotations: dict[str, str] = Field(
         default_factory=dict,

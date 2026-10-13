@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, Path, Query, Request
 
 from app.core.dependencies import get_cluster_repo, get_current_user
 from app.domain.kubernetes_models import (
+    NAMESPACE_NAME_PATTERN,
     NamespaceCreateRequest,
     NamespaceDetailData,
     NamespaceListData,
@@ -31,10 +32,6 @@ from app.services.kube_client import call_kube
 from app.services.namespace_service import NamespaceService
 
 router = APIRouter(prefix="/clusters", tags=["namespaces"])
-
-# A Kubernetes namespace name (RFC 1123 label).
-_NAMESPACE_PATTERN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
-
 
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "")
@@ -93,14 +90,15 @@ async def list_namespaces(
         "namespace is Terminating. The "
         "``kubectl.kubernetes.io/last-applied-configuration`` annotation is "
         "left out: it is a stale copy. 404 ``NAMESPACE_NOT_FOUND`` when it "
-        "does not exist."
+        "does not exist; a name that is not a DNS-1123 label (e.g. uppercase) "
+        "is 422, since no namespace could have it."
     ),
 )
 async def get_namespace(
     request: Request,
     cluster: str,
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
-    name: str = Path(..., max_length=63, pattern=_NAMESPACE_PATTERN),
+    name: str = Path(..., max_length=63, pattern=NAMESPACE_NAME_PATTERN),
     repo: ClusterRepository = Depends(get_cluster_repo),
 ) -> ApiResponse[NamespaceDetailData]:
     data = await call_kube(
