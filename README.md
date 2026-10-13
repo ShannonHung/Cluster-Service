@@ -201,6 +201,7 @@ namespace instead.
 | `GET /clusters/{cluster}/pods` | `pods` | `list` |
 | `GET /clusters/{cluster}/configmaps` | `configmaps` | `list` (per namespace via Role; `namespace=*` needs it cluster-wide) |
 | `GET /clusters/{cluster}/namespaces/{namespace}/configmaps/{name}` | `configmaps` | `get` (per namespace via Role) |
+| `GET /clusters/{cluster}/namespaces/{name}` | `namespaces` | `get` |
 
 All paths are under `/api/v1`. `GET /clusters` reads local config only and
 needs no Kubernetes permission.

@@ -45,6 +45,7 @@ _PERMISSIONS: dict[str, tuple[str, str]] = {
     "list_namespaced_config_map": ("configmaps", "list"),
     "list_config_map_for_all_namespaces": ("configmaps", "list"),
     "read_namespaced_config_map": ("configmaps", "get"),
+    "read_namespace": ("namespaces", "get"),
 }
 
 # API endpoints only. Every generated endpoint has a ``<name>_with_http_info``

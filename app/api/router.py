@@ -23,6 +23,7 @@ Route layout:
   GET  /api/v1/clusters/{cluster}/pods                         → List pods in a namespace (filtered)
   GET  /api/v1/clusters/{cluster}/configmaps                   → List ConfigMaps (shape only, no values)
   GET  /api/v1/clusters/{cluster}/namespaces/{ns}/configmaps/{name} → Read one ConfigMap's content
+  GET  /api/v1/clusters/{cluster}/namespaces/{name}            → Read one namespace
   PATCH /api/v1/clusters/{cluster}/nodes/{node}/taints         → Set or remove node taints
   GET  /api/v1/inventory/nodes/{node_name}                    → Cluster node lookup (proxy)
   GET  /api/v1/inventory/mappings                             → Bastion-cluster mappings (proxy)
@@ -40,6 +41,7 @@ from app.api.v1.command import router as command_router
 from app.api.v1.configmaps import router as configmaps_router
 from app.api.v1.deploy import router as deploy_router
 from app.api.v1.inventory import router as inventory_router
+from app.api.v1.namespaces import router as namespaces_router
 from app.api.v1.nodes import router as nodes_router
 from app.api.v1.pods import router as pods_router
 
@@ -51,6 +53,7 @@ v1_router.include_router(clusters_router) # mounts at /api/v1/clusters/...
 v1_router.include_router(nodes_router)    # mounts at /api/v1/clusters/{cluster}/nodes/{node}/...
 v1_router.include_router(pods_router)     # mounts at /api/v1/clusters/{cluster}/pods
 v1_router.include_router(configmaps_router)  # mounts at /api/v1/clusters/{cluster}/configmaps
+v1_router.include_router(namespaces_router)  # mounts at /api/v1/clusters/{cluster}/namespaces
 v1_router.include_router(command_router)  # mounts at /api/v1/command/...
 v1_router.include_router(inventory_router)  # mounts at /api/v1/inventory/...
 

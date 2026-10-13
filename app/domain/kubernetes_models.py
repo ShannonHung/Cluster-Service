@@ -333,6 +333,27 @@ class ConfigMapDetailData(BaseModel):
     )
 
 
+class NamespaceDetailData(BaseModel):
+    """Response body for GET /api/v1/clusters/{cluster}/namespaces/{name}.
+
+    ``last-applied-configuration`` is stripped from annotations for the same
+    reason as on a ConfigMap: it is a stale copy, not the current state.
+    """
+
+    cluster: str
+    name: str
+    status: str = Field(description="Namespace phase: Active or Terminating.")
+    labels: dict[str, str] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(
+        default_factory=dict,
+        description="All annotations except kubectl.kubernetes.io/last-applied-configuration.",
+    )
+    creation_timestamp: Optional[datetime] = None
+    deletion_timestamp: Optional[datetime] = Field(
+        None, description="Set once deletion was requested — i.e. while Terminating."
+    )
+
+
 class NodeDetailData(BaseModel):
     """Full node detail (node attributes only; pods are queried separately).
 

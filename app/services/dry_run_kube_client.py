@@ -52,6 +52,8 @@ from typing import Any, Optional
 from kubernetes.client import (
     V1ConfigMap,
     V1ConfigMapList,
+    V1Namespace,
+    V1NamespaceStatus,
     V1Node,
     V1NodeCondition,
     V1NodeList,
@@ -242,6 +244,48 @@ def _default_configmaps() -> list[V1ConfigMap]:
     ]
 
 
+def _make_namespace(
+    name: str,
+    phase: str = "Active",
+    annotations: Optional[dict[str, str]] = None,
+) -> V1Namespace:
+    return V1Namespace(
+        metadata=V1ObjectMeta(
+            name=name,
+            labels={"kubernetes.io/metadata.name": name},
+            annotations=annotations or {},
+            creation_timestamp=_CREATED,
+            deletion_timestamp=_CREATED if phase == "Terminating" else None,
+        ),
+        status=V1NamespaceStatus(phase=phase),
+    )
+
+
+def _default_namespaces() -> dict[str, V1Namespace]:
+    """One namespace of each shape a caller or a test branches on.
+
+    Kubernetes' own two, an ordinary Active one carrying last-applied plus a
+    second annotation (so stripping one is distinguishable from dropping all),
+    and a Terminating one (CONTEXT.md) — without it the "being deleted" branch
+    of a create could never fire.
+    """
+    namespaces = [
+        _make_namespace("default"),
+        _make_namespace("kube-system"),
+        _make_namespace(
+            "dry-run-apps",
+            annotations={
+                "kubectl.kubernetes.io/last-applied-configuration": json.dumps(
+                    {"apiVersion": "v1", "kind": "Namespace"}
+                ),
+                "meta.helm.sh/release-name": "dry-run-release",
+            },
+        ),
+        _make_namespace("dry-run-terminating", phase="Terminating"),
+    ]
+    return {ns.metadata.name: ns for ns in namespaces}
+
+
 class _ClusterState:
     """The mutable contents of one dry-run cluster."""
 
@@ -250,6 +294,9 @@ class _ClusterState:
             name: _make_node(name, ready) for name, ready in _NODE_READINESS.items()
         }
         self.pods: list[V1Pod] = _default_pods()
+        # Mutable, unlike ConfigMaps: a namespace created by one request must be
+        # there for the next.
+        self.namespaces: dict[str, V1Namespace] = _default_namespaces()
 
 
 # Shared across the per-request client instances, keyed by cluster name. A real
@@ -278,7 +325,7 @@ class DryRunCoreV1Api:
     ``read_node``, ``patch_node``, ``list_pod_for_all_namespaces``,
     ``list_namespaced_pod``, ``delete_namespaced_pod`` and
     ``create_namespaced_pod_eviction`` — plus the ConfigMap reads
-    ConfigMapService makes.
+    ConfigMapService makes and the namespace calls NamespaceService makes.
     """
 
     def __init__(self, cluster: str = "dry-run-cluster") -> None:
@@ -461,6 +508,17 @@ class DryRunCoreV1Api:
             if cm.metadata.namespace == namespace and cm.metadata.name == name:
                 return cm
         raise _not_found(f"configmap {namespace}/{name}")
+
+    # ── namespaces ────────────────────────────────────────────────────────────
+
+    def read_namespace(self, name: str, **_kwargs: Any) -> V1Namespace:
+        _logger.warning(
+            "DRY-RUN | op=kube.read_namespace | name=%s | no cluster was contacted", name
+        )
+        ns = _state_for(self._cluster).namespaces.get(name)
+        if ns is None:
+            raise _not_found(f"namespaces/{name}")
+        return ns
 
     # ── internals ─────────────────────────────────────────────────────────────
 
