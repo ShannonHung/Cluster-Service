@@ -95,3 +95,26 @@ are left out rather than shown as a second truth.
 ConfigMap with a different kind": its exposure risk is of a different order, so
 any future need to read Secrets is a separate design, not an extension of
 ConfigMap reading.
+
+## Namespaces
+
+**Namespace** — A cluster-wide partition that ConfigMaps, pods and other
+namespaced resources live in. The service can create one and list or read them,
+but never delete one: deleting a namespace takes everything inside it with it,
+irreversibly, so that is a separate design.
+
+**Reserved namespace name** — A name the service refuses to create: `default`
+and anything starting with `kube-`. These belong to Kubernetes itself; the list
+is fixed, not configurable.
+
+**Terminating namespace** — A namespace whose deletion was requested and which
+is still emptying itself. It can no longer be used and its name cannot be
+created again until it is gone. Creating it is refused as already existing, but
+reported distinctly from a namespace that is simply there. Not to be confused
+with a pod that is **Still terminating** — that is a pod-removal outcome during
+a drain; this is the state of a namespace.
+
+A newly created namespace grants the service **nothing** inside it: in
+particular its ConfigMaps are unreadable until someone grants that namespace
+explicitly. Creating a namespace is not a way to widen what the service can
+read.

@@ -72,6 +72,8 @@ class ErrorCode(StrEnum):
     DRAIN_BLOCKED              = "DRAIN_BLOCKED"
     NODE_NOT_READY             = "NODE_NOT_READY"
     CONFIGMAP_NOT_FOUND        = "CONFIGMAP_NOT_FOUND"
+    NAMESPACE_NOT_FOUND        = "NAMESPACE_NOT_FOUND"
+    NAMESPACE_ALREADY_EXISTS   = "NAMESPACE_ALREADY_EXISTS"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -330,6 +332,26 @@ class NodeNotReadyException(BaseAppException):
             f"to report Ready, or investigate why it is not.",
             detail={"node": node_name, "status": status},
         )
+
+
+class NamespaceNotFoundException(BaseAppException):
+    """Raised when the requested namespace does not exist."""
+
+    http_status = 404
+    error_code = ErrorCode.NAMESPACE_NOT_FOUND
+    log_level = logging.INFO
+
+
+class NamespaceAlreadyExistsException(BaseAppException):
+    """Raised when creating a namespace whose name is already taken.
+
+    Covers a Terminating namespace too (CONTEXT.md): its name cannot be created
+    again until it is gone. The message says which of the two it is.
+    """
+
+    http_status = 409
+    error_code = ErrorCode.NAMESPACE_ALREADY_EXISTS
+    log_level = logging.INFO
 
 
 class KubeApiException(BaseAppException):

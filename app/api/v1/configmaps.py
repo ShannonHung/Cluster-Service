@@ -21,7 +21,11 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, Path, Query, Request
 
 from app.core.dependencies import get_cluster_repo, get_current_user
-from app.domain.kubernetes_models import ConfigMapDetailData, ConfigMapListData
+from app.domain.kubernetes_models import (
+    NAMESPACE_NAME_PATTERN,
+    ConfigMapDetailData,
+    ConfigMapListData,
+)
 from app.domain.models import ApiResponse, User
 from app.repositories.cluster_repository import ClusterRepository
 from app.services.configmap_service import ConfigMapService
@@ -29,9 +33,9 @@ from app.services.kube_client import call_kube
 
 router = APIRouter(prefix="/clusters", tags=["configmaps"])
 
-# A Kubernetes namespace name (RFC 1123 label). Rejects "*": on a content read
-# the namespace is part of the ConfigMap's identity, not a filter.
-_NAMESPACE_PATTERN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+# Rejects "*": on a content read the namespace is part of the ConfigMap's
+# identity, not a filter.
+_NAMESPACE_PATTERN = NAMESPACE_NAME_PATTERN
 
 
 def _request_id(request: Request) -> str:
