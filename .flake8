@@ -1,0 +1,12 @@
+[flake8]
+# This repo has no line-length standard yet, so E501 (line too long) is not
+# reported: the code was never written to 79 columns, and an editor running
+# flake8 with its defaults flags over a thousand lines. Adopting a formatter
+# (black, 88 columns) is its own change and would re-enable E501 with it.
+#   E203 — whitespace before ':'; conflicts with black's slice formatting.
+#   E221 — aligned `=` in enums and tables (e.g. ErrorCode) is house style.
+extend-ignore = E501, E203, E221
+per-file-ignores =
+    # APP_ENV must be set before the app is imported.
+    tests/conftest.py: E402
+exclude = .git, .venv, __pycache__, .pytest_cache, htmlcov
