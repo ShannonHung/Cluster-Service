@@ -57,6 +57,7 @@ from app.domain.kubernetes_models import (
     TaintSpec,
 )
 from app.services.kube_errors import translate_kube_errors
+from app.services.kube_patch import key_merge_patch
 
 _logger = logging.getLogger(__name__)
 
@@ -651,11 +652,7 @@ class NodeService:
 
         Returns True if a patch was actually sent, False when nothing to do.
         """
-        labels: dict[str, str | None] = {}
-        labels.update(set_labels or {})
-        for key in remove_labels or []:
-            labels[key] = None  # null value → Kubernetes deletes the label
-
+        labels = key_merge_patch(set_labels or {}, remove_labels or [])
         if not labels:
             return False
 
@@ -679,11 +676,7 @@ class NodeService:
 
         Returns True if a patch was actually sent, False when nothing to do.
         """
-        annotations: dict[str, str | None] = {}
-        annotations.update(set_annotations or {})
-        for key in remove_annotations or []:
-            annotations[key] = None
-
+        annotations = key_merge_patch(set_annotations or {}, remove_annotations or [])
         if not annotations:
             return False
 

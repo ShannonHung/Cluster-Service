@@ -30,7 +30,7 @@ from app.domain.kubernetes_models import (
     NamespaceLabelsPatchRequest,
     NamespaceListData,
 )
-from app.domain.models import ApiResponse, User
+from app.domain.models import ApiResponse, Caller, User
 from app.repositories.cluster_repository import ClusterRepository
 from app.services.kube_client import call_kube
 from app.services.namespace_service import NamespaceService
@@ -41,8 +41,15 @@ def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "")
 
 
-def _service() -> NamespaceService:
+# ── Dependency providers ──────────────────────────────────────────────────────
+
+
+def _get_namespace_service() -> NamespaceService:
     return NamespaceService(provenance_prefix=get_settings().PROVENANCE_ANNOTATION_PREFIX)
+
+
+def _caller(request: Request, user: User) -> Caller:
+    return Caller(account=user.account, request_id=_request_id(request))
 
 
 def _split_csv(value: Optional[str]) -> list[str]:
@@ -73,11 +80,12 @@ async def list_namespaces(
     status: Optional[str] = Query(None, description="Comma-separated phases: Active, Terminating."),
     label_selector: Optional[str] = Query(None, description="Kubernetes label selector, e.g. team=a."),
     repo: ClusterRepository = Depends(get_cluster_repo),
+    svc: NamespaceService = Depends(_get_namespace_service),
 ) -> ApiResponse[NamespaceListData]:
     data = await call_kube(
         repo,
         cluster,
-        lambda kube: _service().list_namespaces(
+        lambda kube: svc.list_namespaces(
             cluster=cluster,
             kube=kube,
             name_prefixes=_split_csv(name),
@@ -108,11 +116,12 @@ async def get_namespace(
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
     name: str = Path(..., max_length=63, pattern=NAMESPACE_NAME_PATTERN),
     repo: ClusterRepository = Depends(get_cluster_repo),
+    svc: NamespaceService = Depends(_get_namespace_service),
 ) -> ApiResponse[NamespaceDetailData]:
     data = await call_kube(
         repo,
         cluster,
-        lambda kube: _service().get_namespace(cluster=cluster, name=name, kube=kube),
+        lambda kube: svc.get_namespace(cluster=cluster, name=name, kube=kube),
     )
     return ApiResponse(data=data, request_id=_request_id(request))
 
@@ -142,16 +151,16 @@ async def create_namespace(
     body: NamespaceCreateRequest,
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
     repo: ClusterRepository = Depends(get_cluster_repo),
+    svc: NamespaceService = Depends(_get_namespace_service),
 ) -> ApiResponse[NamespaceDetailData]:
     data = await call_kube(
         repo,
         cluster,
-        lambda kube: _service().create_namespace(
+        lambda kube: svc.create_namespace(
             cluster=cluster,
             name=body.name,
             labels=body.labels,
-            user=current_user.account,
-            request_id=_request_id(request),
+            caller=_caller(request, current_user),
             kube=kube,
         ),
     )
@@ -181,17 +190,17 @@ async def patch_namespace_labels(
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
     name: str = Path(..., max_length=63, pattern=NAMESPACE_NAME_PATTERN),
     repo: ClusterRepository = Depends(get_cluster_repo),
+    svc: NamespaceService = Depends(_get_namespace_service),
 ) -> ApiResponse[NamespaceLabelsData]:
     data = await call_kube(
         repo,
         cluster,
-        lambda kube: _service().update_labels(
+        lambda kube: svc.update_labels(
             cluster=cluster,
             name=name,
             set_labels=body.set,
             remove_labels=body.remove,
-            user=current_user.account,
-            request_id=_request_id(request),
+            caller=_caller(request, current_user),
             kube=kube,
         ),
     )

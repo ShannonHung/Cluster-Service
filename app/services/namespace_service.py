@@ -30,7 +30,9 @@ from app.domain.kubernetes_models import (
     NamespaceSummary,
     is_reserved_namespace_name,
 )
+from app.domain.models import Caller
 from app.services.kube_errors import translate_kube_errors
+from app.services.kube_patch import key_merge_patch
 
 _logger = logging.getLogger(__name__)
 
@@ -67,17 +69,17 @@ class NamespaceService:
         self,
         cluster: str,
         name: str,
-        user: str,
-        request_id: str,
+        labels: dict[str, str],
+        caller: Caller,
         kube: CoreV1Api,
-        labels: dict[str, str] | None = None,
     ) -> NamespaceDetailData:
         """Create a namespace stamped with its provenance annotations.
 
         The name and ``labels`` are validated (DNS-1123 label, not reserved;
-        no Reserved label key) by the request model before this is called. The annotations say who (``user``, the
-        authenticated account), when, and in which request — a pointer back to
-        the audit trail, not an audit record (ADR 0002).
+        no Reserved label key) by the request model before this is called. The
+        annotations say who (the caller's authenticated account), when, and in
+        which request — a pointer back to the audit trail, not an audit record
+        (ADR 0002).
 
         Raises:
             NamespaceAlreadyExistsException: The name is taken — by a namespace
@@ -92,7 +94,13 @@ class NamespaceService:
                         metadata=V1ObjectMeta(
                             name=name,
                             labels=labels or None,
-                            annotations=self._provenance("created", user, request_id),
+                            # Nothing to clear on a new namespace, so an absent
+                            # request id is left out rather than sent as null.
+                            annotations={
+                                k: v
+                                for k, v in self._provenance("created", caller).items()
+                                if v is not None
+                            },
                         )
                     )
                 )
@@ -102,7 +110,7 @@ class NamespaceService:
                 raise self._already_exists(cluster, name, kube) from exc
 
         _logger.info(
-            "Created namespace | cluster=%s | name=%s | user=%s", cluster, name, user
+            "Created namespace | cluster=%s | name=%s | user=%s", cluster, name, caller.account
         )
         return _to_detail(cluster, ns)
 
@@ -112,8 +120,7 @@ class NamespaceService:
         name: str,
         set_labels: dict[str, str],
         remove_labels: list[str],
-        user: str,
-        request_id: str,
+        caller: Caller,
         kube: CoreV1Api,
     ) -> NamespaceLabelsData:
         """Add / overwrite ``set_labels`` and delete ``remove_labels`` in one
@@ -131,11 +138,10 @@ class NamespaceService:
                 f"Namespace '{name}' is reserved for Kubernetes; its labels cannot be "
                 "changed through this service.",
             )
-        labels: dict[str, str | None] = {**set_labels, **dict.fromkeys(remove_labels)}
         body = {
             "metadata": {
-                "labels": labels,  # null value → Kubernetes deletes the label
-                "annotations": self._provenance("last-modified", user, request_id),
+                "labels": key_merge_patch(set_labels, remove_labels),
+                "annotations": self._provenance("last-modified", caller),
             }
         }
         with translate_kube_errors(
@@ -149,7 +155,7 @@ class NamespaceService:
 
         _logger.info(
             "Patched namespace labels | cluster=%s | name=%s | set=%s | remove=%s | user=%s",
-            cluster, name, sorted(set_labels), sorted(remove_labels), user,
+            cluster, name, sorted(set_labels), sorted(remove_labels), caller.account,
         )
         return NamespaceLabelsData(cluster=cluster, name=name, labels=ns.metadata.labels or {})
 
@@ -218,15 +224,17 @@ class NamespaceService:
         _logger.info("Read namespace | cluster=%s | name=%s", cluster, name)
         return _to_detail(cluster, ns)
 
-    def _provenance(self, verb: str, user: str, request_id: str) -> dict[str, str]:
+    def _provenance(self, verb: str, caller: Caller) -> dict[str, str | None]:
         """``<prefix>/<verb>-by``, ``<prefix>/<verb>-at`` and
-        ``<prefix>/last-request-id`` — the last left out when there is no id,
-        rather than recorded as an empty one."""
+        ``<prefix>/last-request-id``, as merge-patch values. With no request id
+        the last is ``None`` — it deletes a previous id, which would otherwise
+        sit beside the new stamps and point at the wrong request."""
         at = self._clock().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        stamp = {f"{self._prefix}/{verb}-by": user, f"{self._prefix}/{verb}-at": at}
-        if request_id:
-            stamp[f"{self._prefix}/last-request-id"] = request_id
-        return stamp
+        return {
+            f"{self._prefix}/{verb}-by": caller.account,
+            f"{self._prefix}/{verb}-at": at,
+            f"{self._prefix}/last-request-id": caller.request_id or None,
+        }
 
     @staticmethod
     def _already_exists(

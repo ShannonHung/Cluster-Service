@@ -29,6 +29,7 @@ from app.core.exceptions import (
     NamespaceNotFoundException,
     ValidationException,
 )
+from app.domain.models import Caller
 from app.services.namespace_service import PAGE_SIZE, NamespaceService
 
 _CREATED = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
@@ -216,7 +217,7 @@ def test_a_malformed_label_selector_is_a_validation_error():
 
 def _create(kube: MagicMock, name: str = "team-a"):
     return _svc().create_namespace(
-        cluster="c1", name=name, user="alice", request_id="req-1", kube=kube
+        cluster="c1", name=name, labels={}, caller=Caller(account="alice", request_id="req-1"), kube=kube
     )
 
 
@@ -244,8 +245,8 @@ def test_the_caller_s_labels_are_sent_with_the_namespace():
     kube.create_namespace.side_effect = lambda body: body
 
     result = _svc().create_namespace(
-        cluster="c1", name="team-a", user="alice", request_id="r", kube=kube,
-        labels={"team": "a"},
+        cluster="c1", name="team-a", labels={"team": "a"},
+        caller=Caller(account="alice", request_id="r"), kube=kube,
     )
 
     assert kube.create_namespace.call_args.args[0].metadata.labels == {"team": "a"}
@@ -260,7 +261,9 @@ def test_created_at_is_utc_whatever_the_clock_zone():
         provenance_prefix=_PREFIX, clock=lambda: datetime(2026, 10, 25, 16, 30, tzinfo=taipei)
     )
 
-    svc.create_namespace(cluster="c1", name="team-a", user="alice", request_id="r", kube=kube)
+    svc.create_namespace(
+        cluster="c1", name="team-a", labels={}, caller=Caller(account="alice", request_id="r"), kube=kube
+    )
 
     body = kube.create_namespace.call_args.args[0]
     assert body.metadata.annotations["cs.acme.io/created-at"] == "2026-10-25T08:30:00Z"
@@ -271,7 +274,9 @@ def test_a_request_without_an_id_leaves_last_request_id_out():
     kube = MagicMock()
     kube.create_namespace.side_effect = lambda body: body
 
-    _svc().create_namespace(cluster="c1", name="team-a", user="alice", request_id="", kube=kube)
+    _svc().create_namespace(
+        cluster="c1", name="team-a", labels={}, caller=Caller(account="alice", request_id=""), kube=kube
+    )
 
     body = kube.create_namespace.call_args.args[0]
     assert "cs.acme.io/last-request-id" not in body.metadata.annotations
@@ -344,10 +349,12 @@ def test_any_other_failure_is_a_kube_api_error():
 # ── updating labels ───────────────────────────────────────────────────────────
 
 
-def _update(kube: MagicMock, name: str = "team-a", set_labels=None, remove_labels=None):
+def _update(
+    kube: MagicMock, name: str = "team-a", set_labels=None, remove_labels=None, request_id="req-2"
+):
     return _svc().update_labels(
         cluster="c1", name=name, set_labels=set_labels or {}, remove_labels=remove_labels or [],
-        user="bob", request_id="req-2", kube=kube,
+        caller=Caller(account="bob", request_id=request_id), kube=kube,
     )
 
 
@@ -376,6 +383,18 @@ def test_an_update_stamps_last_modified_and_never_created():
         "cs.acme.io/last-modified-at": "2026-10-25T08:30:00Z",
         "cs.acme.io/last-request-id": "req-2",
     }
+
+
+def test_an_update_without_a_request_id_clears_the_previous_one():
+    """Otherwise the old id would sit beside the new last-modified-* and point
+    at the wrong request."""
+    kube = MagicMock()
+    kube.patch_namespace.return_value = _ns("team-a")
+
+    _update(kube, set_labels={"team": "b"}, request_id="")
+
+    annotations = kube.patch_namespace.call_args.args[1]["metadata"]["annotations"]
+    assert annotations["cs.acme.io/last-request-id"] is None
 
 
 @pytest.mark.parametrize("name", ["default", "kube-system", "kube-public"])
