@@ -35,9 +35,12 @@ APP_ENV=test uv run pytest tests/ -v --cov=app --cov-report=term-missing
 
 # Generate a bcrypt password hash for data/users.json
 make hash p=<password>
+
+# Validate a users file (accounts + access policy) before deploying it
+make check-users f=data/users.json
 ```
 
-Makefile shortcuts: `make install`, `make dev`, `make prod`, `make start`, `make test`, `make test-unit`, `make test-int`, `make test-cov`.
+Makefile shortcuts: `make install`, `make dev`, `make prod`, `make start`, `make test`, `make test-unit`, `make test-int`, `make test-cov`, `make check-users`.
 
 ## Architecture
 
@@ -98,6 +101,17 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 - **A new namespace grants the service nothing inside it.** ConfigMaps there stay unreadable until the per-namespace Role is applied — do not add RoleBinding / ResourceQuota creation to `create` without a design.
 - The list status filter is an allowlist (`Active`, `Terminating`): an unknown value is 422, not a silently empty list. A label selector the API server rejects (400) becomes 422 — caller input, not a cluster fault.
 
+**Users file** (`app/domain/users_document.py`, `app/repositories/json_users_file.py`): `USERS_JSON_PATH` holds accounts *and* the access policy — `{"policies": [...], "users": [{..., "policies": [...]}]}`, or the legacy bare list (= no policy). `data/users.example.json` is the commented reference; tests keep it valid, covering every action, and behaving as its `$comment`s say.
+- **Validated whole, on load.** `UsersDocument` checks every user (non-empty `account`, bcrypt-shaped `hashed_password`, `scopes` list, no duplicate account), every rule, unique rule ids, and refuses unknown keys at every level (a `"polices"` typo would drop rules silently) — `"$comment"` is the one free-text key. All problems are reported in one pass (`UsersDocumentError.problems`) — the duplicate checks run beside the field checks, not after them. Startup (`lifespan`) loads it, so an invalid file fails the deploy; `make check-users` (`app/check_users.py`) runs the same check offline.
+- **One loader, two readers.** `JsonUserRepository` and `JsonPolicyRepository` both read through `users_file(path)` (an `lru_cache`d `JsonUsersFile`), cached on (inode, mtime, ctime, size) — the inode catches a same-size atomic replace within one clock tick — so edits apply without restart and both see the same version. An invalid file at runtime raises `UsersFileInvalidException` (500 `USERS_FILE_INVALID`) for login *and* policed writes — never the last good version. The path stays in the log, not the response.
+
+**Access policy** (`app/domain/access_policy.py`, `app/services/policy_service.py`, ADR 0003): refuses a write by its *parameters* — scopes cannot say "not prod".
+- **Every Kubernetes write route calls the policy before `call_kube`**: `await policy.enforce(current_user, PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: cluster, PolicyParam.NODE: node})` with the values the request will act on (`policy: PolicyService = Depends(get_policy_service)`). `test_every_write_is_refused_before_the_cluster_is_touched` sends every non-GET route in `_ROUTES` under a deny-all policy with a cluster repository that fails if used — so injecting the policy without calling it, or calling it after `call_kube`, fails. **Action and parameter names are `StrEnum`s (`PolicyAction`, `PolicyParam`) — never write `"node.drain"` / `"cluster"` in code**, like `ErrorCode`: a typo then fails at import, not as a silently non-matching rule. `evaluate` still converts its action with `PolicyAction(...)`, so an unknown plain string raises rather than matching no rule (fail-open). Strings stay only where they stand for the users file (rule dicts in tests) or the HTTP contract (response assertions). A new action goes in `PolicyAction` and `POLICY_ACTIONS` with its parameters (a test keeps them equal), in the README action table and in `data/users.example.json` (both are tested for completeness).
+- **Default open; rules only take away.** Global then user layer; per layer a matching `deny` refuses and an `allow` list (if any for the action) must match; no rules → allowed. Both layers must pass, so user rules only tighten. No exemption, admin included. Regexes `fullmatch`.
+- **Batch** (`NodeBatchService`): judges each node, then hands the rest plus the `denied` map to `cordon_many` / `uncordon_many`, whose one loop reports each refused node as an ordinary `failed` result with `error_code` `POLICY_DENIED` (no `kube_status`), counted in `summary.failed` by the one `batch_data`; a fully denied batch never resolves the cluster. **The batch response shape is unchanged** — no `denied` status or summary field (dropped in review: it broke `failed == 0` clients); `test_the_batch_contract_is_unchanged_by_the_policy` holds that. Single-resource refusal is 403 `POLICY_DENIED` with `detail.{action, layer, rule_id, params}`.
+- **Drain checks before its `dry_run` short-circuit**, so a preview reports the refusal. The policy is not a dry-run seam — it runs unchanged under `DRY_RUN_MODE`.
+- Proxy routes (deploy / command / inventory) are not policed; deploy-service judges those parameters.
+
 **Deploy-service client** (`app/clients/deploy_service_client.py` + `app/core/token_manager.py`):
 - `DeployServiceTokenManager` (subclass of abstract `TokenManager`) fetches and caches a bearer token from deploy-service's `/token` endpoint. Refresh is `asyncio.Lock`-guarded and triggers automatically 30s before expiry. There is a **module-level singleton** in `app/api/v1/deploy.py` (`_deploy_token_manager`) — do not instantiate a second one per request.
 - `DeployServiceClient._request_with_retry` retries once on 401 after forcing a token refresh, then maps any non-2xx to `DeployServiceError`.
@@ -132,7 +146,8 @@ Both produce a unified `KubeClientConfig` (`app/domain/kubernetes_models.py`) wh
 5. Add the scope to the relevant entries in `data/users.json`.
 6. Never `asyncio.to_thread` the pieces yourself — `call_kube` (step 3) runs credentials, client and call together off the event loop; add the route to `_ROUTES` in `tests/integration/test_kube_routes_off_event_loop.py`. See **Never call a Kubernetes service inline from a route** above.
 7. If the endpoint acts on many resources at once, follow the **Batch endpoints** conventions above — colon-suffix route, always-200 partial-success envelope, and a size cap on the request model.
-8. If it calls a `CoreV1Api` method not used before, map it in `_PERMISSIONS` in `tests/unit/test_rbac_reference.py`, grant it in `docs/rbac/cluster-service-clusterrole.yaml` (comment which endpoint needs it; namespaced resources that hold data, like ConfigMaps, go in a per-namespace Role, not the ClusterRole), and add a row to the README's **Kubernetes Permissions** table. Local k3d runs on an admin kubeconfig, so that test is the only thing that notices a missing grant before production returns 403 — and it covers `CoreV1Api` only; using another API class (`AppsV1Api`, …) means extending the test first.
+8. If it **writes** to a cluster, add its action to `PolicyAction` and `POLICY_ACTIONS` (`app/domain/access_policy.py`) and call `await policy.enforce(...)` with those enums before `call_kube` — see **Access policy** above. Document the action in the README's access-policy table.
+9. If it calls a `CoreV1Api` method not used before, map it in `_PERMISSIONS` in `tests/unit/test_rbac_reference.py`, grant it in `docs/rbac/cluster-service-clusterrole.yaml` (comment which endpoint needs it; namespaced resources that hold data, like ConfigMaps, go in a per-namespace Role, not the ClusterRole), and add a row to the README's **Kubernetes Permissions** table. Local k3d runs on an admin kubeconfig, so that test is the only thing that notices a missing grant before production returns 403 — and it covers `CoreV1Api` only; using another API class (`AppsV1Api`, …) means extending the test first.
 
 ## Dry-Run Mode
 
@@ -158,6 +173,7 @@ Only the outermost side-effecting collaborators are replaced. Everything a calle
 - every `NodeService` rule: the uncordon readiness gate (409 `NODE_NOT_READY`, no override), drain's refuse-before-evict (400 `DRAIN_BLOCKED`), the always-skipped pod categories, batch failure layering
 - every `ConfigMapService` rule: no value or annotation in a listing, `last-applied-configuration` stripped from content, 404 → `CONFIGMAP_NOT_FOUND`
 - every `NamespaceService` rule: reserved / non-DNS-1123 names, Reserved label keys, malformed or contradictory label updates and extra body fields refused (422) before Kubernetes, provenance annotations stamped, 409 `NAMESPACE_ALREADY_EXISTS` told apart by phase, unknown status filter or malformed label selector → 422, 404 → `NAMESPACE_NOT_FOUND`
+- the access policy: a refused write is 403 `POLICY_DENIED` (a refused batch node is `failed` with `POLICY_DENIED`) before anything reaches the fake — it is not a seam
 - `PipelineService`, `CommandService`, `InventoryProxyService`, and the `DeployServiceError` code / status mapping
 - the published contract: the OpenAPI document is identical to production's, as are the error envelope and the `X-Coordination-ID` → `request_id` round trip
 
@@ -238,7 +254,7 @@ A router short-circuit is correct for `drain`: it is a caller-facing validation 
 ## Other directories
 
 - `rest_client/` — `.http` files (`auth.http`, `cluster.http`, `deploy.http`) for manual API exploration in JetBrains / VS Code REST Client.
-- `data/users.json` — accounts, bcrypt hashes, scopes. Use `make hash p=<password>` or `POST /api/v1/auth/hash-password` to generate hashes.
+- `data/users.json` — accounts, bcrypt hashes, scopes, access policy. Use `make hash p=<password>` or `POST /api/v1/auth/hash-password` to generate hashes; `make check-users` to validate. `data/users.example.json` — commented example of the format.
 - `data/kubeconfigs/` — default `KUBECONFIG_BASE_PATH`; drop `<cluster>.yaml` or `<cluster>.json` files here for the cluster repositories to discover.
 
 ## Agent skills

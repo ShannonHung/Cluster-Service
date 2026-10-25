@@ -73,6 +73,21 @@ any failure where no answer about a particular node came back at all).
 Propagated as a single error, because reporting it per node would claim N
 machines are broken when the real answer is one.
 
+## Access policy
+
+**Access policy** — Rules in `USERS_JSON_PATH` that refuse a write by its
+parameters (cluster, node, namespace), independent of scopes. A global layer
+for everyone plus an optional layer per user; a user's rules can only tighten
+the global ones.
+
+**Policed action** — A write the access policy can refuse, named
+`<resource>.<verb>` (`node.drain`, `namespace.create`). Reads are never policed.
+
+**Policy denial** — A batch node the access policy refused: a *per-node
+failure* with error code `POLICY_DENIED` and no Kubernetes status, because it
+was never sent to Kubernetes. Told apart from other per-node failures by its
+error code, not by a status of its own.
+
 ## Configuration resources
 
 **ConfigMap** — Non-secret configuration stored in a namespace. Identified by

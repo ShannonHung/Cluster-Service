@@ -548,6 +548,10 @@ class BatchNodeResult(BaseModel):
     One shape for both outcomes: success entries leave the three error fields
     unset. A success/failure union was rejected — it generates an awkward
     ``anyOf`` in OpenAPI-derived clients.
+
+    A node the access policy refused is an ordinary failure with
+    ``error_code`` ``POLICY_DENIED`` (the rule in ``message``) and no
+    ``kube_status``: it was never sent to Kubernetes.
     """
 
     node: str

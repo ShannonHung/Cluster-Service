@@ -25,6 +25,7 @@ help:
 	@echo "  make test-cov     執行全部測試並顯示覆蓋率"
 	@echo ""
 	@echo "  make hash p=<密碼>  快速 hash 一個密碼"
+	@echo "  make check-users [f=<檔案>]  檢查 users 檔（帳號 + access policy）格式"
 	@echo "  make clean        刪除 .venv、快取"
 	@echo ""
 
@@ -77,6 +78,13 @@ test-cov:
 hash:
 	@$(PYTHON) -c \
 		"import bcrypt; print(bcrypt.hashpw('$(p)'.encode(), bcrypt.gensalt()).decode())"
+
+# Validate a users file (accounts + access policy) before deploying it.
+# Usage: make check-users              (data/users.json)
+#        make check-users f=path.json
+.PHONY: check-users
+check-users:
+	@APP_ENV=$${APP_ENV:-dev} $(PYTHON) -m app.check_users $(or $(f),data/users.json)
 
 .PHONY: clean
 clean:
