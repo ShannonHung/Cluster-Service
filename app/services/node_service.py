@@ -297,11 +297,11 @@ class NodeService:
         when the real answer is "the cluster is unreachable" or "your
         credentials are dead" — so a batch propagates them instead.
         """
-        if getattr(exc, "cluster_level", False):
-            return True
         if not isinstance(exc, KubeApiException):
             # NodeNotFound / NodeNotReady are about one node by construction.
             return False
+        if exc.cluster_level:
+            return True
         # 401/403 come from the API server, so they arrive untagged — but they
         # are a property of the connection, and will repeat for every node.
         # No status at all means no HTTP response (TLS failure, a request the
