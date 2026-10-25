@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from kubernetes.client import CoreV1Api, V1Node
 from kubernetes.client.exceptions import ApiException
@@ -32,6 +32,7 @@ from kubernetes.client.exceptions import ApiException
 from app.core.config import get_settings
 from app.core.exceptions import (
     DrainBlockedException,
+    ErrorCode,
     KubeApiException,
     NodeNotFoundException,
     NodeNotReadyException,
@@ -72,6 +73,38 @@ def _node_not_found(
     factory ``translate_kube_errors`` calls on a 404."""
     return lambda: NodeNotFoundException(
         f"Node '{node_name}' not found in cluster '{cluster}'.",
+    )
+
+
+def unique_node_names(node_names: list[str]) -> list[str]:
+    """De-duplicate, keeping first-seen order, so ``results`` is safe to key by name."""
+    return list(dict.fromkeys(node_names))
+
+
+def denied_result(node_name: str, reason: str) -> BatchNodeResult:
+    """A node the access policy refused: a failure, never sent to Kubernetes."""
+    return BatchNodeResult(
+        node=node_name,
+        status="failed",
+        error_code=str(ErrorCode.POLICY_DENIED),
+        message=reason,
+    )
+
+
+def batch_data(
+    cluster: str, action: str, results: list[BatchNodeResult],
+) -> BatchNodeActionData:
+    """The one place a batch summary is counted."""
+    succeeded = sum(1 for r in results if r.status == "success")
+    return BatchNodeActionData(
+        cluster=cluster,
+        action=action,
+        summary=BatchSummary(
+            total=len(results),
+            succeeded=succeeded,
+            failed=len(results) - succeeded,
+        ),
+        results=results,
     )
 
 
@@ -223,14 +256,18 @@ class NodeService:
         cluster: str,
         node_names: list[str],
         kube: CoreV1Api,
+        denied: Mapping[str, str] | None = None,
     ) -> BatchNodeActionData:
         """Cordon several nodes, reporting a result for each.
 
         Node-level failures are collected into the response; they never abort
         the batch. Cluster-level failures (unreachable API server) propagate.
+        Nodes in ``denied`` (node → reason) fail with ``POLICY_DENIED`` and
+        are never patched.
         """
         return self._batch_set_unschedulable(
             cluster, node_names, kube, unschedulable=True, action="cordon",
+            denied=denied or {},
         )
 
     def uncordon_many(
@@ -238,14 +275,18 @@ class NodeService:
         cluster: str,
         node_names: list[str],
         kube: CoreV1Api,
+        denied: Mapping[str, str] | None = None,
     ) -> BatchNodeActionData:
         """Uncordon several nodes, reporting a result for each.
 
         Node-level failures are collected into the response; they never abort
         the batch. Cluster-level failures (unreachable API server) propagate.
+        Nodes in ``denied`` (node → reason) fail with ``POLICY_DENIED`` and
+        are never patched.
         """
         return self._batch_set_unschedulable(
             cluster, node_names, kube, unschedulable=False, action="uncordon",
+            denied=denied or {},
         )
 
     @staticmethod
@@ -256,11 +297,11 @@ class NodeService:
         when the real answer is "the cluster is unreachable" or "your
         credentials are dead" — so a batch propagates them instead.
         """
-        if getattr(exc, "cluster_level", False):
-            return True
         if not isinstance(exc, KubeApiException):
             # NodeNotFound / NodeNotReady are about one node by construction.
             return False
+        if exc.cluster_level:
+            return True
         # 401/403 come from the API server, so they arrive untagged — but they
         # are a property of the connection, and will repeat for every node.
         # No status at all means no HTTP response (TLS failure, a request the
@@ -276,6 +317,7 @@ class NodeService:
         *,
         unschedulable: bool,
         action: str,
+        denied: Mapping[str, str],
     ) -> BatchNodeActionData:
         """Shared batch loop for cordon_many / uncordon_many.
 
@@ -301,17 +343,21 @@ class NodeService:
         rather than on a guess.
         """
         results: list[BatchNodeResult] = []
+        names = unique_node_names(node_names)
         # Only uncordon gates on readiness, and only when there is work to do:
         # `_strip_node_names` drops blank entries after min_length validation,
-        # so an all-blank body arrives here empty and must not buy a listing
-        # for a loop that will not run.
+        # so an all-blank body arrives here empty — and a fully denied one has
+        # nothing to patch — and neither must buy a listing.
         statuses = (
             self._node_statuses(cluster, kube)
-            if not unschedulable and node_names
+            if not unschedulable and any(n not in denied for n in names)
             else {}
         )
 
-        for node_name in dict.fromkeys(node_names):
+        for node_name in names:
+            if node_name in denied:
+                results.append(denied_result(node_name, denied[node_name]))
+                continue
             try:
                 if not unschedulable:
                     # Missing from the listing means the node is gone; let the
@@ -351,17 +397,7 @@ class NodeService:
                     )
                 )
 
-        succeeded = sum(1 for r in results if r.status == "success")
-        return BatchNodeActionData(
-            cluster=cluster,
-            action=action,
-            summary=BatchSummary(
-                total=len(results),
-                succeeded=succeeded,
-                failed=len(results) - succeeded,
-            ),
-            results=results,
-        )
+        return batch_data(cluster, action, results)
 
     # ── Drain ─────────────────────────────────────────────────────────────────
 

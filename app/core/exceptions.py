@@ -75,6 +75,10 @@ class ErrorCode(StrEnum):
     NAMESPACE_NOT_FOUND        = "NAMESPACE_NOT_FOUND"
     NAMESPACE_ALREADY_EXISTS   = "NAMESPACE_ALREADY_EXISTS"
 
+    # ── Users file / access policy (USERS_JSON_PATH) ──────────────────────────
+    POLICY_DENIED              = "POLICY_DENIED"
+    USERS_FILE_INVALID         = "USERS_FILE_INVALID"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ServiceError — abstract interface for upstream service error adapters
@@ -242,6 +246,29 @@ class ForbiddenException(BaseAppException):
     log_level = logging.WARNING
 
 
+class PolicyDeniedException(ForbiddenException):
+    """Raised when an access-policy rule refuses a write request.
+
+    Distinct from a missing scope (plain ``FORBIDDEN``): the token is fine, the
+    *parameters* — this cluster, this node — are what the policy refuses.
+    """
+
+    error_code = ErrorCode.POLICY_DENIED
+
+
+class UsersFileInvalidException(BaseAppException):
+    """Raised when USERS_JSON_PATH is missing or fails validation.
+
+    A 500, and both login and every policed write are refused while it lasts:
+    a file that cannot be trusted must fail closed — never be read as "no
+    rules", and never fall back to the last good version.
+    """
+
+    http_status = 500
+    error_code = ErrorCode.USERS_FILE_INVALID
+    log_level = logging.ERROR
+
+
 class NotFoundException(BaseAppException):
     """Raised when a requested resource cannot be found."""
 
@@ -365,7 +392,19 @@ class KubeApiException(BaseAppException):
     error_code = ErrorCode.KUBE_API_ERROR
     log_level = logging.ERROR
 
-    def __init__(self, message: str, *, kube_status: int | None = None, **kwargs) -> None:
+    #: True when the failure is about the cluster, not one resource in it (an
+    #: unreachable API server) — batches propagate it instead of reporting it
+    #: once per node. Set by ``connection_error`` in ``kube_errors.py``.
+    cluster_level: bool = False
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        kube_status: int | None = None,
+        cluster_level: bool = False,
+        **kwargs,
+    ) -> None:
         # Preserve the status the API server actually returned. It can differ
         # from http_status (which floors to 502), and callers rely on the raw
         # value to tell a retryable 503 from a 403. None means no HTTP response
@@ -378,6 +417,7 @@ class KubeApiException(BaseAppException):
         # Use the Kubernetes API status as our HTTP status when it makes sense;
         # otherwise default to 502 (bad gateway from the K8s control plane).
         self.http_status = kube_status if kube_status is not None and kube_status >= 400 else 502
+        self.cluster_level = cluster_level
         super().__init__(message, **kwargs)
 
 

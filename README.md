@@ -43,6 +43,7 @@ open http://localhost:8000/docs
 | `make test-int` | Run integration tests only |
 | `make test-cov` | Run all tests with coverage report |
 | `make hash p=<pw>` | Generate a bcrypt hash for a password |
+| `make check-users [f=<file>]` | Validate a users file (accounts + access policy) before deploying it |
 | `make clean` | Remove `.venv`, caches |
 
 Manual commands (from `cluster-service/`):
@@ -160,24 +161,114 @@ Key settings:
 | `APP_NAME` | `Cluster Service` | Application name shown in logs/docs |
 | `SECRET_KEY` | *(required)* | JWT signing secret — **must be changed in prod** |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | JWT TTL in minutes |
-| `USERS_JSON_PATH` | `data/users.json` | Path to the user store |
+| `USERS_JSON_PATH` | `data/users.json` | Path to the user store and access policy |
 | `PROVENANCE_ANNOTATION_PREFIX` | *(required)* | Domain your organisation controls (e.g. `cluster-service.acme.io`, no trailing `/`) that the service's namespace annotations live under. Startup fails if unset, not a DNS subdomain, or under `kubernetes.io` / `k8s.io`. Only `.env.dev` / `.env.test` set one — **production must supply its own** through the environment; changing it later leaves old annotations behind |
 
 ---
 
 ## User Management
 
-Users are stored in `data/users.json`:
+Users are stored in the file at `USERS_JSON_PATH` (default `data/users.json`), next to the **access policy**. **[`data/users.example.json`](data/users.example.json) is a complete, commented example** — start from it.
 
 ```json
-[
-    {
-        "account": "admin",
-        "hashed_password": "<bcrypt hash>",
-        "scopes": ["cluster_api", "vm_api"]
-    }
-]
+{
+    "policies": [],
+    "users": [
+        {
+            "account": "admin",
+            "hashed_password": "<bcrypt hash>",
+            "scopes": ["cluster_api", "vm_api"]
+        }
+    ]
+}
 ```
+
+The older bare-list form (`[ {user}, ... ]`) is still read, as a file with no policy.
+
+**The whole file is validated when it is loaded** — at startup, and again whenever it changes on disk — not at the first login that happens to hit a bad entry. Startup fails on an invalid file; an invalid edit made while running refuses login and every policed write with `500 USERS_FILE_INVALID` until it is fixed (the last good version is never used in its place). What is checked:
+
+- each user has a non-empty `account`, a `hashed_password` that is a **bcrypt hash** (a pasted plaintext password is refused), and `scopes` as a list; no account appears twice
+- every policy rule is valid (see below) and every rule `id` is unique across the file
+- no unknown keys anywhere — a typo such as `"polices"` would otherwise silently drop that user's rules. For notes, use `"$comment"`, accepted on the file, on each user and on each rule
+
+Check a file before deploying it — every problem is listed with where it is, and the exit code is non-zero:
+
+```bash
+make check-users                         # data/users.json
+make check-users f=path/to/users.json
+# INVALID path/to/users.json
+#   users.0.hashed_password: is not a bcrypt hash — generate one with `make hash p=<password>`
+#   users.0.polices: Extra inputs are not permitted
+#   users: duplicate account(s): ['alice']
+```
+
+Every problem is listed in one run, duplicates included.
+
+### Access policy
+
+Scopes decide *which endpoints* a token may call; the access policy decides *which clusters, nodes and namespaces* a write may touch. Rules go in the top-level `policies` (every user) or in a user's own `policies`.
+
+A rule:
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `id` | yes | Unique name; shown in every denial and audit log line |
+| `description` | no | Why the rule exists; shown to the caller who is refused |
+| `actions` | yes | Which policed actions it covers — names from the table below, or a glob: `node.*`, `namespace.*`, `*` |
+| `effect` | yes | `deny` or `allow` |
+| `match` | yes | Parameter → regex. **All** entries must match (AND). Each regex must match the **whole** value: `prod` does not match `nonprod-1`; write `prod-.*` for a prefix. Use `.*` to match anything |
+| `$comment` | no | Free text, ignored |
+
+```json
+{ "id": "no-prod-writes",
+  "description": "prod clusters are maintained by the SRE pipeline",
+  "actions": ["node.*", "namespace.*"],
+  "effect": "deny",
+  "match": { "cluster": "prod-.*" } }
+```
+
+#### Where action names come from
+
+An action is a fixed name for one kind of write, `<resource>.<verb>`. The list is defined in code — the `PolicyAction` enum and, with the parameters each action can be matched on, `POLICY_ACTIONS`, both in [`app/domain/access_policy.py`](app/domain/access_policy.py). A rule names an action by its value (`"node.drain"`), not by the enum member. Each name maps to the endpoints below, and the parameter values are taken from the request: `cluster` and `node` from the URL path, `namespace` from the path (label update) or from the body's `name` (create).
+
+| Action | `match` keys | Endpoints it covers |
+|--------|--------------|---------------------|
+| `node.cordon` | `cluster`, `node` | `POST /api/v1/clusters/{cluster}/nodes/{node}/cordon`, `POST /api/v1/clusters/{cluster}/nodes:cordon` (each node of the batch) |
+| `node.uncordon` | `cluster`, `node` | `POST …/nodes/{node}/uncordon`, `POST …/nodes:uncordon` (each node) |
+| `node.drain` | `cluster`, `node` | `POST …/nodes/{node}/drain` — also when `dry_run=true`, so a preview reports the refusal |
+| `node.label` | `cluster`, `node` | `PATCH …/nodes/{node}/labels` |
+| `node.annotate` | `cluster`, `node` | `PATCH …/nodes/{node}/annotations` |
+| `node.taint` | `cluster`, `node` | `PATCH …/nodes/{node}/taints` |
+| `namespace.create` | `cluster`, `namespace` | `POST /api/v1/clusters/{cluster}/namespaces` (`namespace` = body `name`) |
+| `namespace.label` | `cluster`, `namespace` | `PATCH /api/v1/clusters/{cluster}/namespaces/{name}/labels` |
+
+Only writes are policed — every `GET` is unaffected, and so are the deploy / command / inventory proxies (deploy-service restricts those itself). A name not in this table, or a `match` key the rule's actions do not have (e.g. `node` on `namespace.create`), makes the file invalid rather than leaving an inert rule. A new write endpoint gets its action added to `PolicyAction` / `POLICY_ACTIONS` and to this table.
+
+#### How a request is judged
+
+Each request is judged by two **layers** — the global `policies`, then the caller's own — and must pass **both**. Within one layer, for the action being requested:
+
+1. if any `deny` rule matches → **refused**;
+2. else, if the layer has at least one `allow` rule for this action → one of them must match, or **refused**;
+3. else → passes this layer.
+
+So the default is **open**: rules only ever take permissions away.
+
+| The layer has, for this action… | Request is… |
+|-------------------------------|-------------|
+| no rules at all | allowed |
+| only `deny` rules | allowed unless a `deny` matches |
+| only `allow` rules | allowed only if an `allow` matches |
+| both | refused if a `deny` matches (deny wins); otherwise allowed only if an `allow` matches |
+
+An `allow` rule restricts **only the actions it lists**: an operator allow-listed for `node.drain` on `dev-.*` is not restricted on `node.taint` by it. Because both layers must pass, a user's rules can only **tighten** the global ones — a user `allow` never overrides a global `deny`, and nobody, `admin` included, is exempt from a global rule. A rule whose `match` names a parameter the request lacks does not match.
+
+#### What the caller sees
+
+- A refused single-resource write: `403 POLICY_DENIED`, nothing sent to Kubernetes. The message names the rule and its `description`; `detail` holds `action`, `layer` (`global` / `user`), `rule_id` (`null` when no `allow` matched) and `params`.
+- A refused node in a batch: an ordinary `"status": "failed"` entry in `results`, counted in `summary.failed`, with `error_code: POLICY_DENIED`, the reason in `message` and no `kube_status` (it was never sent to Kubernetes). The other nodes proceed, and the response is still 200 — the batch response shape is unchanged. A fully refused batch never contacts the cluster.
+
+Edits apply on the next request; no restart is needed. Design: [ADR 0003](docs/adr/0003-access-policy-lives-in-the-users-file-and-only-tightens.md).
 
 Generate a password hash:
 

@@ -3,20 +3,19 @@ app/repositories/json_user_repository.py
 
 JSON file-backed implementation of UserRepository.
 
-The file is read on every call (no in-process caching) so that changes to
-users.json are picked up without restarting the service — suitable for
-small-scale deployments.  Replace with a caching layer or a proper DB
-implementation (e.g. SqlUserRepository) when needed.
+The file is loaded through ``JsonUsersFile``, which validates the whole file
+(accounts and access policy) and re-reads it whenever it changes — so edits to
+users.json are picked up without restarting the service, and an invalid file
+refuses login (``UsersFileInvalidException``) instead of half-working.
+Suitable for small-scale deployments; replace with a proper DB implementation
+(e.g. SqlUserRepository) when needed.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
-
-from app.core.exceptions import NotFoundException
 from app.domain.models import UserInDB
+from app.repositories.json_users_file import JsonUsersFile
 from app.repositories.user_repository import UserRepository
 
 _logger = logging.getLogger(__name__)
@@ -25,44 +24,38 @@ _logger = logging.getLogger(__name__)
 class JsonUserRepository(UserRepository):
     """Reads user records from a JSON file.
 
-    Expected file format::
+    Expected file format — either a bare list of users, or an object whose
+    ``users`` holds that list next to the access policy (see
+    ``users_document.py``; policies are read by ``JsonPolicyRepository``)::
 
-        [
-            {
-                "account": "admin",
-                "hashed_password": "<bcrypt hash>",
-                "scopes": ["cluster_api", "vm_api"]
-            }
-        ]
+        {
+            "policies": [],
+            "users": [
+                {
+                    "account": "admin",
+                    "hashed_password": "<bcrypt hash>",
+                    "scopes": ["cluster_api", "vm_api"]
+                }
+            ]
+        }
     """
 
-    def __init__(self, json_path: str | Path) -> None:
-        self._path = Path(json_path)
-
-    # ── private helpers ───────────────────────────────────────────────────────
-
-    def _load(self) -> list[dict]:
-        if not self._path.exists():
-            _logger.error(
-                "Users JSON file not found | path=%s", self._path
-            )
-            raise NotFoundException(
-                f"Users data file not found at '{self._path}'.",
-            )
-        with self._path.open(encoding="utf-8") as fh:
-            return json.load(fh)
+    def __init__(self, users_file: JsonUsersFile) -> None:
+        self._file = users_file
 
     # ── interface implementation ───────────────────────────────────────────────
 
     async def get_by_account(self, account: str) -> UserInDB | None:
-        records = self._load()
-        for record in records:
-            if record.get("account") == account:
+        for user in self._file.load().users:
+            if user.account == account:
                 _logger.debug("User found | account=%s", account)
-                return UserInDB(**record)
+                return UserInDB(
+                    account=user.account,
+                    hashed_password=user.hashed_password,
+                    scopes=user.scopes,
+                )
         _logger.debug("User not found | account=%s", account)
         return None
 
     async def list_accounts(self) -> list[str]:
-        records = self._load()
-        return [r["account"] for r in records if "account" in r]
+        return [u.account for u in self._file.load().users]

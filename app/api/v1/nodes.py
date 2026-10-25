@@ -14,7 +14,10 @@ Routes:
   PATCH /api/v1/clusters/{cluster}/nodes/{node}/annotations → set/remove annotations
   PATCH /api/v1/clusters/{cluster}/nodes/{node}/taints      → set/remove taints
 
-All endpoints require the ``cluster_api`` scope.
+All endpoints require the ``cluster_api`` scope. Every write is checked
+against the access policy (``PolicyService``) before Kubernetes is contacted:
+a refused single-node write is 403 ``POLICY_DENIED``; a refused node in a
+batch is a ``failed`` result with ``POLICY_DENIED`` and the rest proceed.
 """
 
 from __future__ import annotations
@@ -24,7 +27,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 
-from app.core.dependencies import get_cluster_repo, get_current_user
+from app.core.dependencies import get_cluster_repo, get_current_user, get_policy_service
+from app.core.exceptions import ErrorCode
+from app.domain.access_policy import PolicyAction, PolicyParam
 from app.domain.kubernetes_models import (
     BatchNodeActionData,
     BatchNodeRequest,
@@ -41,7 +46,9 @@ from app.domain.kubernetes_models import (
 from app.domain.models import ApiResponse, User
 from app.repositories.cluster_repository import ClusterRepository
 from app.services.kube_client import call_kube
+from app.services.node_batch_service import BatchAction, NodeBatchService
 from app.services.node_service import NodeService
+from app.services.policy_service import PolicyService
 
 _logger = logging.getLogger(__name__)
 
@@ -52,6 +59,13 @@ router = APIRouter(prefix="/clusters", tags=["nodes"])
 
 def _get_node_service() -> NodeService:
     return NodeService()
+
+
+def _get_node_batch_service(
+    svc: NodeService = Depends(_get_node_service),
+    policy: PolicyService = Depends(get_policy_service),
+) -> NodeBatchService:
+    return NodeBatchService(svc, policy)
 
 
 def _request_id(request: Request) -> str:
@@ -105,7 +119,13 @@ async def cordon_node(
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
     repo: ClusterRepository = Depends(get_cluster_repo),
     svc: NodeService = Depends(_get_node_service),
+    policy: PolicyService = Depends(get_policy_service),
 ) -> ApiResponse[NodeActionData]:
+    await policy.enforce(
+        current_user,
+        PolicyAction.NODE_CORDON,
+        {PolicyParam.CLUSTER: cluster, PolicyParam.NODE: node},
+    )
     data = await call_kube(
         repo,
         cluster,
@@ -141,7 +161,13 @@ async def uncordon_node(
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
     repo: ClusterRepository = Depends(get_cluster_repo),
     svc: NodeService = Depends(_get_node_service),
+    policy: PolicyService = Depends(get_policy_service),
 ) -> ApiResponse[NodeActionData]:
+    await policy.enforce(
+        current_user,
+        PolicyAction.NODE_UNCORDON,
+        {PolicyParam.CLUSTER: cluster, PolicyParam.NODE: node},
+    )
     data = await call_kube(
         repo,
         cluster,
@@ -166,7 +192,10 @@ async def uncordon_node(
         "``results``, so a failed node never hides the nodes that succeeded.\n\n"
         "Duplicate names are de-duplicated. Cluster-level failures (unknown "
         "cluster, unreachable API server) are returned as a normal error "
-        "response instead, since no node was attempted."
+        "response instead, since no node was attempted.\n\n"
+        "A node the access policy refuses is a ``failed`` result with "
+        "``error_code`` ``POLICY_DENIED`` (the rule in ``message``); it is "
+        "never sent to Kubernetes."
     ),
 )
 async def cordon_nodes(
@@ -175,7 +204,7 @@ async def cordon_nodes(
     body: BatchNodeRequest,
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
     repo: ClusterRepository = Depends(get_cluster_repo),
-    svc: NodeService = Depends(_get_node_service),
+    batch: NodeBatchService = Depends(_get_node_batch_service),
 ) -> ApiResponse[BatchNodeActionData]:
     return await _run_batch(
         request=request,
@@ -183,7 +212,7 @@ async def cordon_nodes(
         body=body,
         user=current_user,
         repo=repo,
-        svc=svc,
+        batch=batch,
         action="cordon",
     )
 
@@ -212,7 +241,7 @@ async def uncordon_nodes(
     body: BatchNodeRequest,
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
     repo: ClusterRepository = Depends(get_cluster_repo),
-    svc: NodeService = Depends(_get_node_service),
+    batch: NodeBatchService = Depends(_get_node_batch_service),
 ) -> ApiResponse[BatchNodeActionData]:
     return await _run_batch(
         request=request,
@@ -220,7 +249,7 @@ async def uncordon_nodes(
         body=body,
         user=current_user,
         repo=repo,
-        svc=svc,
+        batch=batch,
         action="uncordon",
     )
 
@@ -232,27 +261,24 @@ async def _run_batch(
     body: BatchNodeRequest,
     user: User,
     repo: ClusterRepository,
-    svc: NodeService,
-    action: str,
+    batch: NodeBatchService,
+    action: BatchAction,
 ) -> ApiResponse[BatchNodeActionData]:
-    """Shared body for the two batch routes.
+    """Shared body for the two batch routes: run the batch, log its outcome.
 
-    NodeService is synchronous (blocking kubernetes client), so the batch runs
-    through call_kube on a worker thread — otherwise a batch of N nodes would
-    block the event loop for N round-trips and the process would serve no
-    other request, health checks included, while it ran.
+    NodeBatchService judges the access policy per node and runs the rest
+    through call_kube on a worker thread — the blocking kubernetes client must
+    never hold the event loop for N round-trips.
     """
-    batch = svc.cordon_many if action == "cordon" else svc.uncordon_many
-    data = await call_kube(
-        repo,
-        cluster,
-        lambda kube: batch(cluster=cluster, node_names=body.nodes, kube=kube),
+    data = await batch.run(
+        user=user, repo=repo, cluster=cluster, action=action, node_names=body.nodes,
     )
 
     failed = [r.node for r in data.results if r.status == "failed"]
+    denied = [r.node for r in data.results if r.error_code == ErrorCode.POLICY_DENIED]
     _logger.info(
         "Batch %s | user=%s | cluster=%s | requested=%d | succeeded=%d | "
-        "failed=%d | failed_nodes=%s | reason=%s",
+        "failed=%d | failed_nodes=%s | policy_denied_nodes=%s | reason=%s",
         action,
         user.account,
         cluster,
@@ -260,6 +286,7 @@ async def _run_batch(
         data.summary.succeeded,
         data.summary.failed,
         failed,
+        denied,
         body.reason,
     )
     return ApiResponse(data=data, request_id=_request_id(request))
@@ -286,7 +313,15 @@ async def drain_node(
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))] = None,
     repo: ClusterRepository = Depends(get_cluster_repo),
     svc: NodeService = Depends(_get_node_service),
+    policy: PolicyService = Depends(get_policy_service),
 ) -> ApiResponse[DrainActionData]:
+    # Before the dry_run short-circuit, so a request-level dry run also tells
+    # the caller the policy would refuse the real drain.
+    await policy.enforce(
+        current_user,
+        PolicyAction.NODE_DRAIN,
+        {PolicyParam.CLUSTER: cluster, PolicyParam.NODE: node},
+    )
     _logger.info(
         "Drain requested | cluster=%s | node=%s | dry_run=%s | reason=%s",
         cluster, node, body.dry_run, body.reason,
@@ -333,7 +368,13 @@ async def patch_node_labels(
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))] = None,
     repo: ClusterRepository = Depends(get_cluster_repo),
     svc: NodeService = Depends(_get_node_service),
+    policy: PolicyService = Depends(get_policy_service),
 ) -> ApiResponse[NodeLabelsData]:
+    await policy.enforce(
+        current_user,
+        PolicyAction.NODE_LABEL,
+        {PolicyParam.CLUSTER: cluster, PolicyParam.NODE: node},
+    )
     data = await call_kube(
         repo,
         cluster,
@@ -367,7 +408,13 @@ async def patch_node_annotations(
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))] = None,
     repo: ClusterRepository = Depends(get_cluster_repo),
     svc: NodeService = Depends(_get_node_service),
+    policy: PolicyService = Depends(get_policy_service),
 ) -> ApiResponse[NodeAnnotationsData]:
+    await policy.enforce(
+        current_user,
+        PolicyAction.NODE_ANNOTATE,
+        {PolicyParam.CLUSTER: cluster, PolicyParam.NODE: node},
+    )
     data = await call_kube(
         repo,
         cluster,
@@ -403,7 +450,13 @@ async def patch_node_taints(
     current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))] = None,
     repo: ClusterRepository = Depends(get_cluster_repo),
     svc: NodeService = Depends(_get_node_service),
+    policy: PolicyService = Depends(get_policy_service),
 ) -> ApiResponse[NodeTaintData]:
+    await policy.enforce(
+        current_user,
+        PolicyAction.NODE_TAINT,
+        {PolicyParam.CLUSTER: cluster, PolicyParam.NODE: node},
+    )
     data = await call_kube(
         repo,
         cluster,

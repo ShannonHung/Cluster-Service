@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import html
 import logging
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from fastapi import FastAPI, Depends, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,7 +28,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.api.router import api_router
 from app.core.config import Settings, get_settings
-from app.core.dependencies import set_access_cookie, safe_next_path
+from app.core.dependencies import safe_next_path, set_access_cookie
 from app.core.exceptions import (
     AuthException,
     BaseAppException,
@@ -39,6 +39,7 @@ from app.core.login_template import LOGIN_HTML
 from app.core.logging import RequestIdMiddleware, setup_logging
 from app.domain.models import OAuth2TokenResponse
 from app.repositories.json_user_repository import JsonUserRepository
+from app.repositories.json_users_file import users_file
 from app.services.auth_service import AuthService
 
 _logger = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ _logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager.
 
     Startup:  configure logging, validate config.
@@ -64,6 +65,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.APP_VERSION,
         settings.APP_ENV,
     )
+
+    # Validate the whole users file — accounts and access policy — before
+    # serving: a mistake fails the deploy here instead of surfacing at the
+    # first login or write that touches it. A broken edit made at runtime
+    # fails closed per request instead.
+    users_file(settings.USERS_JSON_PATH).load()
 
     yield  # ← application runs here
 
@@ -183,7 +190,7 @@ def create_app() -> FastAPI:
         response: Response,
         form_data: OAuth2PasswordRequestForm = Depends(),
     ) -> OAuth2TokenResponse:
-        svc = AuthService(JsonUserRepository(settings.USERS_JSON_PATH))
+        svc = AuthService(JsonUserRepository(users_file(settings.USERS_JSON_PATH)))
         user = await svc.authenticate(form_data.username, form_data.password)
         token_data = await svc.generate_token(user)
         set_access_cookie(response, token_data.access_token, token_data.expires_in)
@@ -208,7 +215,7 @@ def create_app() -> FastAPI:
         next: str = Form("/docs"),
     ):
         target = safe_next_path(next)
-        svc = AuthService(JsonUserRepository(settings.USERS_JSON_PATH))
+        svc = AuthService(JsonUserRepository(users_file(settings.USERS_JSON_PATH)))
         try:
             user = await svc.authenticate(form_data.username, form_data.password)
         except AuthException:
