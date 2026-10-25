@@ -18,6 +18,11 @@ from app.repositories.json_policy_repository import JsonPolicyRepository
 from app.repositories.json_user_repository import JsonUserRepository
 from app.repositories.json_users_file import JsonUsersFile
 
+# Deliberately not a bcrypt hash — the input the validator must refuse.
+# Named rather than inlined next to the password key, so secret scanners
+# do not read a test input as a leaked credential.
+_NOT_A_HASH = "plain-text-value"
+
 _DENY_PROD = {
     "id": "no-prod",
     "actions": ["node.drain"],
@@ -89,7 +94,7 @@ async def test_edits_are_picked_up_without_restart(tmp_path):
         {"policies": [_DENY_PROD, _DENY_PROD], "users": []},  # duplicate id
         {"policies": {"id": "not-a-list"}, "users": []},
         {"users": [{**_ALICE, "policies": [{"id": "x"}]}]},
-        {"users": [{**_ALICE, "hashed_password": "secret"}]},
+        {"users": [{**_ALICE, "hashed_password": _NOT_A_HASH}]},
         "just a string",
     ],
     ids=["bad-regex", "unknown-action", "duplicate-id", "policies-not-list", "bad-user-rule",

@@ -16,6 +16,11 @@ import pytest
 from app.domain.access_policy import POLICY_ACTIONS
 from app.domain.users_document import UsersDocumentError, parse_users_document
 
+# Deliberately not a bcrypt hash — the input the validator must refuse.
+# Named rather than inlined next to the password key, so secret scanners
+# do not read a test input as a leaked credential.
+_NOT_A_HASH = "plain-text-value"
+
 _HASH = "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW"
 _ALICE = {"account": "alice", "hashed_password": _HASH, "scopes": ["cluster_api"]}
 _RULE = {"id": "no-prod", "actions": ["node.drain"], "effect": "deny", "match": {"cluster": "prod-.*"}}
@@ -39,7 +44,7 @@ def test_object_form_carries_both_layers():
     [
         ([{"hashed_password": _HASH}], "account"),
         ([{"account": "alice"}], "hashed_password"),
-        ([{**_ALICE, "hashed_password": "secret"}], "bcrypt"),
+        ([{**_ALICE, "hashed_password": _NOT_A_HASH}], "bcrypt"),
         ([{**_ALICE, "scopes": "cluster_api"}], "scopes"),
         ([{**_ALICE, "polices": []}], "polices"),  # typo would drop the rules
         ([_ALICE, _ALICE], "duplicate account"),
@@ -74,7 +79,7 @@ def test_every_problem_is_reported_in_one_pass():
     with pytest.raises(UsersDocumentError) as info:
         parse_users_document({
             "policies": [_RULE, {**_RULE, "match": {"cluster": "prod-("}}],
-            "users": [{**_ALICE, "hashed_password": "secret"}, _ALICE],
+            "users": [{**_ALICE, "hashed_password": _NOT_A_HASH}, _ALICE],
         })
     problems = "\n".join(info.value.problems)
     assert "users.0.hashed_password: is not a bcrypt hash" in problems

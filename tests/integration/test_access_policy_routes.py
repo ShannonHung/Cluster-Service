@@ -23,6 +23,10 @@ from app.core.exceptions import UsersFileInvalidException
 from app.services.dry_run_kube_client import reset_dry_run_clusters
 from tests.integration.test_kube_routes_off_event_loop import _ROUTES as _KUBE_ROUTES
 
+# Deliberately not a bcrypt hash — the input the validator must refuse.
+# Named rather than inlined next to the password key, so secret scanners
+# do not read a test input as a leaked credential.
+_NOT_A_HASH = "plain-text-value"
 _FIXTURE = Path(__file__).parent.parent / "fixtures" / "users.json"
 _READY = "dry-run-node-ready"
 _OTHER = "dry-run-node-notready"
@@ -240,7 +244,7 @@ def test_a_broken_edit_refuses_writes_until_fixed(client, admin):
     "content",
     [
         {"policies": [{"id": "x"}], "users": []},
-        [{"account": "alice", "hashed_password": "plaintext", "scopes": []}],
+        [{"account": "alice", "hashed_password": _NOT_A_HASH, "scopes": []}],
     ],
     ids=["bad-rule", "bad-user"],
 )
