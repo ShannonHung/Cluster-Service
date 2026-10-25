@@ -18,7 +18,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.domain.label_rules import check_label_keys, check_labels
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -347,14 +349,19 @@ _RESERVED_NAMESPACE = "default"
 _RESERVED_NAMESPACE_PREFIX = "kube-"
 
 
+def is_reserved_namespace_name(name: str) -> bool:
+    """CONTEXT.md, Reserved namespace name: `default` and `kube-*`. Fixed."""
+    return name == _RESERVED_NAMESPACE or name.startswith(_RESERVED_NAMESPACE_PREFIX)
+
+
 class NamespaceCreateRequest(BaseModel):
     """Request body for POST /api/v1/clusters/{cluster}/namespaces.
 
-    ``extra="forbid"``: a ``labels`` field (or a typo of one) is a 422, never
-    silently dropped — a caller must not believe a label took effect, and the
-    field name stays free for a future, separately designed labels option.
-    Every check here runs before Kubernetes is called: RBAC cannot restrict a
-    ``create`` by name, so this is the only place the name is bounded.
+    ``extra="forbid"``: any field but ``name`` and ``labels`` (a typo
+    included) is a 422, never silently dropped. Every check here runs before
+    Kubernetes is called: RBAC cannot restrict a ``create`` by name, so this is
+    the only place the name is bounded — and the only place a Reserved label
+    key (CONTEXT.md) is refused.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -365,16 +372,76 @@ class NamespaceCreateRequest(BaseModel):
         pattern=NAMESPACE_NAME_PATTERN,
         description="DNS-1123 label. Not `default`, not starting with `kube-`.",
     )
+    labels: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Namespace labels. Keys under `kubernetes.io` / `k8s.io` (or a "
+            "subdomain) are reserved and refused."
+        ),
+    )
+
+    @field_validator("labels")
+    @classmethod
+    def _valid_labels(cls, labels: dict[str, str]) -> dict[str, str]:
+        check_labels(labels)
+        return labels
 
     @field_validator("name")
     @classmethod
     def _not_reserved(cls, name: str) -> str:
-        if name == _RESERVED_NAMESPACE or name.startswith(_RESERVED_NAMESPACE_PREFIX):
+        if is_reserved_namespace_name(name):
             raise ValueError(
                 f"'{name}' is reserved for Kubernetes "
                 f"('{_RESERVED_NAMESPACE}' and '{_RESERVED_NAMESPACE_PREFIX}*')"
             )
         return name
+
+
+class NamespaceLabelsPatchRequest(BaseModel):
+    """Request body for PATCH /api/v1/clusters/{cluster}/namespaces/{name}/labels.
+
+    Labels change key by key, never wholesale: other parties label namespaces
+    too (CONTEXT.md, Namespace label). Every check runs before Kubernetes is
+    called; a Reserved label key is refused in ``remove`` as well as ``set``,
+    since removing one changes behaviour just as setting it does.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    set: dict[str, str] = Field(default_factory=dict, description="Labels to add or overwrite.")
+    remove: list[str] = Field(
+        default_factory=list, description="Label keys to delete; an absent key is a no-op."
+    )
+
+    @field_validator("set")
+    @classmethod
+    def _valid_set(cls, labels: dict[str, str]) -> dict[str, str]:
+        check_labels(labels)
+        return labels
+
+    @field_validator("remove")
+    @classmethod
+    def _valid_remove(cls, keys: list[str]) -> list[str]:
+        check_label_keys(keys)
+        return keys
+
+    @model_validator(mode="after")
+    def _a_change_and_no_contradiction(self) -> "NamespaceLabelsPatchRequest":
+        if not self.set and not self.remove:
+            raise ValueError("nothing to change: give `set`, `remove`, or both")
+        both = sorted(self.set.keys() & set(self.remove))
+        if both:
+            raise ValueError(f"label keys {both} are in both `set` and `remove`")
+        return self
+
+
+class NamespaceLabelsData(BaseModel):
+    """Response body for PATCH …/namespaces/{name}/labels — the namespace's
+    full current labels after the update."""
+
+    cluster: str
+    name: str
+    labels: dict[str, str] = Field(default_factory=dict)
 
 
 class NamespaceSummary(BaseModel):

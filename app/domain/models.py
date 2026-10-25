@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 T = TypeVar("T")
 
@@ -47,6 +47,17 @@ class User(BaseModel):
 
     account: str
     scopes: list[str] = Field(default_factory=list)
+
+
+class Caller(BaseModel):
+    """Who is acting, and in which request: the authenticated account (never a
+    caller-asserted identity) plus the request id that links back to the logs.
+    What a provenance annotation records (ADR 0002)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    account: str
+    request_id: str
 
 
 class TokenPayload(BaseModel):

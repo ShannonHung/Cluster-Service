@@ -10,6 +10,8 @@ namespace: deletion takes everything inside it, irreversibly.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import get_args
 
 from kubernetes.client import CoreV1Api, V1Namespace, V1NamespaceList, V1ObjectMeta
@@ -22,11 +24,15 @@ from app.core.exceptions import (
 )
 from app.domain.kubernetes_models import (
     NamespaceDetailData,
+    NamespaceLabelsData,
     NamespaceListData,
     NamespacePhase,
     NamespaceSummary,
+    is_reserved_namespace_name,
 )
+from app.domain.models import Caller
 from app.services.kube_errors import translate_kube_errors
+from app.services.kube_patch import key_merge_patch
 
 _logger = logging.getLogger(__name__)
 
@@ -44,17 +50,36 @@ _PHASES: dict[str, NamespacePhase] = {p.lower(): p for p in get_args(NamespacePh
 
 
 class NamespaceService:
-    """Lists namespaces, reads one, and creates one."""
+    """Lists namespaces, reads one, and creates one.
+
+    ``provenance_prefix`` is the domain the service's provenance annotations
+    live under (ADR 0002); ``clock`` is injectable so their timestamps can be
+    asserted.
+    """
+
+    def __init__(
+        self,
+        provenance_prefix: str,
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    ) -> None:
+        self._prefix = provenance_prefix
+        self._clock = clock
 
     def create_namespace(
-        self, cluster: str, name: str, user: str, kube: CoreV1Api
+        self,
+        cluster: str,
+        name: str,
+        labels: dict[str, str],
+        caller: Caller,
+        kube: CoreV1Api,
     ) -> NamespaceDetailData:
-        """Create a namespace carrying nothing but its name.
+        """Create a namespace stamped with its provenance annotations.
 
-        The name is validated (DNS-1123 label, not reserved) by the request
-        model before this is called. No label or annotation of the service's
-        own is added: who created it is the API gateway's audit trail, and this
-        log line.
+        The name and ``labels`` are validated (DNS-1123 label, not reserved;
+        no Reserved label key) by the request model before this is called. The
+        annotations say who (the caller's authenticated account), when, and in
+        which request — a pointer back to the audit trail, not an audit record
+        (ADR 0002).
 
         Raises:
             NamespaceAlreadyExistsException: The name is taken — by a namespace
@@ -64,16 +89,75 @@ class NamespaceService:
         """
         with translate_kube_errors(cluster, f"create namespace '{name}' in cluster '{cluster}'"):
             try:
-                ns = kube.create_namespace(V1Namespace(metadata=V1ObjectMeta(name=name)))
+                ns = kube.create_namespace(
+                    V1Namespace(
+                        metadata=V1ObjectMeta(
+                            name=name,
+                            labels=labels or None,
+                            # Nothing to clear on a new namespace, so an absent
+                            # request id is left out rather than sent as null.
+                            annotations={
+                                k: v
+                                for k, v in self._provenance("created", caller).items()
+                                if v is not None
+                            },
+                        )
+                    )
+                )
             except ApiException as exc:
                 if exc.status != 409:
                     raise
                 raise self._already_exists(cluster, name, kube) from exc
 
         _logger.info(
-            "Created namespace | cluster=%s | name=%s | user=%s", cluster, name, user
+            "Created namespace | cluster=%s | name=%s | user=%s", cluster, name, caller.account
         )
         return _to_detail(cluster, ns)
+
+    def update_labels(
+        self,
+        cluster: str,
+        name: str,
+        set_labels: dict[str, str],
+        remove_labels: list[str],
+        caller: Caller,
+        kube: CoreV1Api,
+    ) -> NamespaceLabelsData:
+        """Add / overwrite ``set_labels`` and delete ``remove_labels`` in one
+        patch, stamping ``last-modified-*`` and ``last-request-id`` alongside
+        (ADR 0002); ``created-*`` is never touched. Keys are validated by the
+        request model; a key absent from the namespace is a no-op.
+
+        Raises:
+            ValidationException: ``name`` is a Reserved namespace name.
+            NamespaceNotFoundException: The namespace does not exist.
+            KubeApiException: On any other Kubernetes API failure.
+        """
+        if is_reserved_namespace_name(name):
+            raise ValidationException(
+                f"Namespace '{name}' is reserved for Kubernetes; its labels cannot be "
+                "changed through this service.",
+            )
+        body = {
+            "metadata": {
+                "labels": key_merge_patch(set_labels, remove_labels),
+                "annotations": self._provenance("last-modified", caller),
+            }
+        }
+        with translate_kube_errors(
+            cluster,
+            f"patch labels on namespace '{name}' of cluster '{cluster}'",
+            not_found=lambda: NamespaceNotFoundException(
+                f"Namespace '{name}' not found in cluster '{cluster}'.",
+            ),
+        ):
+            ns = kube.patch_namespace(name, body)
+
+        _logger.info(
+            "Patched namespace labels | cluster=%s | name=%s | set=%s | remove=%s | user=%s",
+            cluster, name, sorted(set_labels), sorted(remove_labels), caller.account,
+        )
+        return NamespaceLabelsData(cluster=cluster, name=name, labels=ns.metadata.labels or {})
 
     def list_namespaces(
         self,
@@ -139,6 +223,18 @@ class NamespaceService:
 
         _logger.info("Read namespace | cluster=%s | name=%s", cluster, name)
         return _to_detail(cluster, ns)
+
+    def _provenance(self, verb: str, caller: Caller) -> dict[str, str | None]:
+        """``<prefix>/<verb>-by``, ``<prefix>/<verb>-at`` and
+        ``<prefix>/last-request-id``, as merge-patch values. With no request id
+        the last is ``None`` — it deletes a previous id, which would otherwise
+        sit beside the new stamps and point at the wrong request."""
+        at = self._clock().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return {
+            f"{self._prefix}/{verb}-by": caller.account,
+            f"{self._prefix}/{verb}-at": at,
+            f"{self._prefix}/last-request-id": caller.request_id or None,
+        }
 
     @staticmethod
     def _already_exists(

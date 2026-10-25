@@ -114,6 +114,28 @@ reported distinctly from a namespace that is simply there. Not to be confused
 with a pod that is **Still terminating** — that is a pod-removal outcome during
 a drain; this is the state of a namespace.
 
+**Namespace label** — A key/value tag on a namespace, used to identify and
+select it. Can be given when the namespace is created, and later added,
+overwritten or removed key by key — never replaced wholesale, because other
+parties (controllers, operators) put labels there too and a wholesale replace
+would silently erase theirs. Labels on a **Reserved namespace name** cannot be
+changed through the service, just as such a namespace cannot be created.
+
+**Reserved label key** — A label key whose prefix is `kubernetes.io`, `k8s.io`,
+or a subdomain of either. These are not just tags: Kubernetes acts on them (e.g.
+the Pod Security level enforced in the namespace), so setting or removing one
+would be a way to change a namespace's security posture rather than describe
+it. Refused on create and on update alike; the list is fixed, not
+configurable, and a refusal names every offending key at once.
+
+**Provenance annotations** — Annotations the service itself puts on a namespace
+it creates or relabels: who (the authenticated account), when, and which
+request. They belong to the service; no caller can set or remove them. A
+convenience pointer back to the audit trail, **not** an audit record: anyone
+with direct cluster access can alter them, and they show only the latest write.
+"Created" is recorded once and never overwritten; "last modified" moves with
+each label update. See ADR 0002.
+
 A newly created namespace grants the service **nothing** inside it: in
 particular its ConfigMaps are unreadable until someone grants that namespace
 explicitly. Creating a namespace is not a way to widen what the service can

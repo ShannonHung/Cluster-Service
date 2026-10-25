@@ -14,7 +14,10 @@ import os
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.domain.label_rules import is_dns_subdomain, is_reserved_domain
 
 
 class Settings(BaseSettings):
@@ -68,6 +71,26 @@ class Settings(BaseSettings):
     # validation affordance on one operation — the two must not be unified.
     # Combining this with APP_ENV=prod is refused at startup (see app/main.py).
     DRY_RUN_MODE: bool = False
+
+    # ── Provenance annotations (ADR 0002) ─────────────────────────────────────
+    # The domain the service's own annotations on a namespace live under, e.g.
+    # `cluster-service.acme.io` → `cluster-service.acme.io/created-by`. Must be
+    # a domain the operator controls, so there is deliberately no default: a
+    # placeholder would be stamped onto every namespace of a deployment that
+    # forgot to set it. Changing it later leaves the old annotations behind.
+    PROVENANCE_ANNOTATION_PREFIX: str
+
+    @field_validator("PROVENANCE_ANNOTATION_PREFIX")
+    @classmethod
+    def _usable_prefix(cls, value: str) -> str:
+        if not is_dns_subdomain(value):
+            raise ValueError(
+                f"'{value}' is not a DNS subdomain (lowercase, at most 253 "
+                "characters, no trailing '/')"
+            )
+        if is_reserved_domain(value):
+            raise ValueError(f"'{value}' is reserved for Kubernetes (kubernetes.io, k8s.io)")
+        return value
 
     model_config = SettingsConfigDict(
         # Load order: .env (base) → .env.{APP_ENV} (env-specific overrides).

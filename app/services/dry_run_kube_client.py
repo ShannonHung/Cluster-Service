@@ -250,12 +250,13 @@ def _make_namespace(
     name: str,
     phase: str = "Active",
     annotations: Optional[dict[str, str]] = None,
+    labels: Optional[dict[str, str]] = None,
 ) -> V1Namespace:
     return V1Namespace(
         metadata=V1ObjectMeta(
             name=name,
-            labels={"kubernetes.io/metadata.name": name},
-            annotations=annotations or {},
+            labels={**(labels or {}), "kubernetes.io/metadata.name": name},
+            annotations=dict(annotations or {}),
             creation_timestamp=_CREATED,
             deletion_timestamp=_CREATED if phase == "Terminating" else None,
         ),
@@ -555,10 +556,31 @@ class DryRunCoreV1Api:
         namespaces = _state_for(self._cluster).namespaces
         if name in namespaces:
             raise _conflict(f"namespaces/{name}")
-        # Kubernetes labels every namespace with its own name; mirror that so a
-        # created namespace has the shape a real one does.
-        namespaces[name] = _make_namespace(name)
+        # Keep what the caller sent (labels, the service's provenance
+        # annotations); Kubernetes adds its own name label on top, so mirror
+        # that so a created namespace has the shape a real one does.
+        namespaces[name] = _make_namespace(
+            name,
+            labels=body.metadata.labels,
+            annotations=body.metadata.annotations,
+        )
         return namespaces[name]
+
+    def patch_namespace(self, name: str, body: dict, **_kwargs: Any) -> V1Namespace:
+        """Merges ``metadata.labels`` / ``metadata.annotations`` as the API
+        server does — a null value deletes the key, an absent key is a no-op —
+        so the next read sees the change. A missing namespace is the SDK's 404."""
+        _logger.warning(
+            "DRY-RUN | op=kube.patch_namespace | name=%s | nothing was changed on any cluster",
+            name,
+        )
+        ns = _state_for(self._cluster).namespaces.get(name)
+        if ns is None:
+            raise _not_found(f"namespaces/{name}")
+        meta = body.get("metadata", {})
+        ns.metadata.labels = _merge(ns.metadata.labels, meta.get("labels"))
+        ns.metadata.annotations = _merge(ns.metadata.annotations, meta.get("annotations"))
+        return ns
 
     # ── internals ─────────────────────────────────────────────────────────────
 
@@ -597,6 +619,17 @@ def _bad_request(what: str):
     exc = ApiException(status=400, reason="Bad Request")
     exc.body = f'{{"message": "dry-run: {what}"}}'
     return exc
+
+
+def _merge(current: Optional[dict[str, str]], patch: Optional[dict]) -> dict[str, str]:
+    """A JSON merge patch on one string map: null deletes, anything else sets."""
+    merged = dict(current or {})
+    for key, value in (patch or {}).items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _conflict(what: str):
