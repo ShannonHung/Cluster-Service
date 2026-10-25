@@ -19,6 +19,7 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 
+from app.core.config import get_settings
 from app.core.dependencies import get_cluster_repo, get_current_user
 from app.domain.kubernetes_models import (
     NAMESPACE_NAME_PATTERN,
@@ -35,6 +36,10 @@ router = APIRouter(prefix="/clusters", tags=["namespaces"])
 
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "")
+
+
+def _service() -> NamespaceService:
+    return NamespaceService(provenance_prefix=get_settings().PROVENANCE_ANNOTATION_PREFIX)
 
 
 def _split_csv(value: Optional[str]) -> list[str]:
@@ -69,7 +74,7 @@ async def list_namespaces(
     data = await call_kube(
         repo,
         cluster,
-        lambda kube: NamespaceService().list_namespaces(
+        lambda kube: _service().list_namespaces(
             cluster=cluster,
             kube=kube,
             name_prefixes=_split_csv(name),
@@ -104,7 +109,7 @@ async def get_namespace(
     data = await call_kube(
         repo,
         cluster,
-        lambda kube: NamespaceService().get_namespace(cluster=cluster, name=name, kube=kube),
+        lambda kube: _service().get_namespace(cluster=cluster, name=name, kube=kube),
     )
     return ApiResponse(data=data, request_id=_request_id(request))
 
@@ -117,7 +122,10 @@ async def get_namespace(
     description=(
         "Creates a namespace from a body holding only ``name`` (DNS-1123 label; "
         "not ``default``, not ``kube-*``) — any other field, ``labels`` "
-        "included, is 422. The service adds no label or annotation of its own. "
+        "included, is 422. The service stamps its provenance annotations "
+        "(``<PROVENANCE_ANNOTATION_PREFIX>/created-by``, ``/created-at``, "
+        "``/last-request-id``): a pointer to the audit trail, not an audit "
+        "record (ADR 0002). "
         "409 ``NAMESPACE_ALREADY_EXISTS`` when the name is taken; "
         "``detail.status`` is ``Terminating`` when the existing namespace is "
         "still being deleted. A new namespace grants the service nothing inside "
@@ -134,8 +142,12 @@ async def create_namespace(
     data = await call_kube(
         repo,
         cluster,
-        lambda kube: NamespaceService().create_namespace(
-            cluster=cluster, name=body.name, user=current_user.account, kube=kube
+        lambda kube: _service().create_namespace(
+            cluster=cluster,
+            name=body.name,
+            user=current_user.account,
+            request_id=_request_id(request),
+            kube=kube,
         ),
     )
     return ApiResponse(data=data, request_id=_request_id(request))

@@ -9,6 +9,8 @@ test_dry_run_deny_paths.py.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -132,10 +134,26 @@ def test_creates_a_namespace_then_reads_and_lists_it(client, headers):
     assert "team-a" in _list(client, headers)
 
 
-def test_a_created_namespace_carries_nothing_from_the_service(client, headers):
+def test_a_created_namespace_is_stamped_with_its_provenance(client, headers):
+    """ADR 0002, under .env.test's prefix. Visible on a following read, not only
+    in the create response — it is on the namespace, not just in the answer."""
+    resp = client.post(_URL, headers={**headers, "X-Coordination-ID": "req-42"}, json={"name": "team-a"})
+    assert resp.status_code == 201, resp.text
+
+    annotations = client.get(f"{_URL}/team-a", headers=headers).json()["data"]["annotations"]
+    assert annotations["cluster-service.test/created-by"] == "test_admin"
+    assert annotations["cluster-service.test/last-request-id"] == "req-42"
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", annotations["cluster-service.test/created-at"])
+    assert set(annotations) == {
+        "cluster-service.test/created-by",
+        "cluster-service.test/created-at",
+        "cluster-service.test/last-request-id",
+    }
+
+
+def test_a_created_namespace_carries_no_label_of_the_service(client, headers):
     data = _create(client, headers, {"name": "team-a"}).json()["data"]
 
-    assert data["annotations"] == {}
     # Kubernetes itself labels every namespace with its own name; nothing else.
     assert set(data["labels"]) <= {"kubernetes.io/metadata.name"}
 

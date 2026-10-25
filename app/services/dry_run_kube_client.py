@@ -250,12 +250,13 @@ def _make_namespace(
     name: str,
     phase: str = "Active",
     annotations: Optional[dict[str, str]] = None,
+    labels: Optional[dict[str, str]] = None,
 ) -> V1Namespace:
     return V1Namespace(
         metadata=V1ObjectMeta(
             name=name,
-            labels={"kubernetes.io/metadata.name": name},
-            annotations=annotations or {},
+            labels={**(labels or {}), "kubernetes.io/metadata.name": name},
+            annotations=dict(annotations or {}),
             creation_timestamp=_CREATED,
             deletion_timestamp=_CREATED if phase == "Terminating" else None,
         ),
@@ -555,9 +556,14 @@ class DryRunCoreV1Api:
         namespaces = _state_for(self._cluster).namespaces
         if name in namespaces:
             raise _conflict(f"namespaces/{name}")
-        # Kubernetes labels every namespace with its own name; mirror that so a
-        # created namespace has the shape a real one does.
-        namespaces[name] = _make_namespace(name)
+        # Keep what the caller sent (labels, the service's provenance
+        # annotations); Kubernetes adds its own name label on top, so mirror
+        # that so a created namespace has the shape a real one does.
+        namespaces[name] = _make_namespace(
+            name,
+            labels=body.metadata.labels,
+            annotations=body.metadata.annotations,
+        )
         return namespaces[name]
 
     # ── internals ─────────────────────────────────────────────────────────────

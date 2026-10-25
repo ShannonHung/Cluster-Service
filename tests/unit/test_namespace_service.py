@@ -10,7 +10,7 @@ whose deletion was requested and which is still emptying itself.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -34,6 +34,12 @@ from app.services.namespace_service import PAGE_SIZE, NamespaceService
 _CREATED = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 _DELETED = datetime(2026, 2, 3, 4, 5, 6, tzinfo=timezone.utc)
 _LAST_APPLIED = "kubectl.kubernetes.io/last-applied-configuration"
+_PREFIX = "cs.acme.io"
+_NOW = datetime(2026, 10, 25, 8, 30, 0, tzinfo=timezone.utc)
+
+
+def _svc() -> NamespaceService:
+    return NamespaceService(provenance_prefix=_PREFIX, clock=lambda: _NOW)
 
 
 def _ns(
@@ -66,7 +72,7 @@ def test_reads_one_namespace():
         annotations={"owner": "ops", _LAST_APPLIED: '{"kind": "Namespace"}'},
     )
 
-    result = NamespaceService().get_namespace(cluster="c1", name="team-a", kube=kube)
+    result = _svc().get_namespace(cluster="c1", name="team-a", kube=kube)
 
     assert result.cluster == "c1"
     assert result.name == "team-a"
@@ -84,7 +90,7 @@ def test_a_terminating_namespace_carries_its_deletion_time():
         "legacy", phase="Terminating", deletion_timestamp=_DELETED
     )
 
-    result = NamespaceService().get_namespace(cluster="c1", name="legacy", kube=kube)
+    result = _svc().get_namespace(cluster="c1", name="legacy", kube=kube)
 
     assert result.status == "Terminating"
     assert result.deletion_timestamp == _DELETED
@@ -95,7 +101,7 @@ def test_a_missing_namespace_is_namespace_not_found():
     kube.read_namespace.side_effect = ApiException(status=404, reason="Not Found")
 
     with pytest.raises(NamespaceNotFoundException) as info:
-        NamespaceService().get_namespace(cluster="c1", name="ghost", kube=kube)
+        _svc().get_namespace(cluster="c1", name="ghost", kube=kube)
 
     assert info.value.http_status == 404
     assert info.value.error_code == "NAMESPACE_NOT_FOUND"
@@ -122,7 +128,7 @@ def _names(result) -> list[str]:
 def test_lists_every_namespace_with_its_shape():
     kube = _kube(_ns("default", labels={"a": "b"}), _ns("legacy", phase="Terminating"))
 
-    result = NamespaceService().list_namespaces(cluster="c1", kube=kube)
+    result = _svc().list_namespaces(cluster="c1", kube=kube)
 
     assert result.cluster == "c1"
     first, second = result.namespaces
@@ -139,7 +145,7 @@ def test_follows_continue_tokens_until_the_last_page():
         _page(_ns("b"), token=""),  # the API server sends "" on the last page
     ]
 
-    result = NamespaceService().list_namespaces(cluster="c1", kube=kube)
+    result = _svc().list_namespaces(cluster="c1", kube=kube)
 
     assert _names(result) == ["a", "b"]
     assert [c.kwargs["_continue"] for c in kube.list_namespace.call_args_list] == [None, "next"]
@@ -149,7 +155,7 @@ def test_follows_continue_tokens_until_the_last_page():
 def test_name_prefixes_are_ored():
     kube = _kube(_ns("team-a"), _ns("team-b"), _ns("ops-x"), _ns("default"))
 
-    result = NamespaceService().list_namespaces(
+    result = _svc().list_namespaces(
         cluster="c1", kube=kube, name_prefixes=["team-", "ops-"]
     )
 
@@ -159,7 +165,7 @@ def test_name_prefixes_are_ored():
 def test_status_filter_ignores_case():
     kube = _kube(_ns("a"), _ns("b", phase="Terminating"))
 
-    result = NamespaceService().list_namespaces(
+    result = _svc().list_namespaces(
         cluster="c1", kube=kube, statuses=["terminating"]
     )
 
@@ -169,7 +175,7 @@ def test_status_filter_ignores_case():
 def test_filters_are_anded():
     kube = _kube(_ns("team-a"), _ns("team-b", phase="Terminating"), _ns("ops", phase="Terminating"))
 
-    result = NamespaceService().list_namespaces(
+    result = _svc().list_namespaces(
         cluster="c1", kube=kube, name_prefixes=["team-"], statuses=["Terminating"]
     )
 
@@ -180,7 +186,7 @@ def test_an_unknown_status_is_refused_before_kubernetes_is_called():
     kube = _kube(_ns("a"))
 
     with pytest.raises(ValidationException) as info:
-        NamespaceService().list_namespaces(cluster="c1", kube=kube, statuses=["Deleted"])
+        _svc().list_namespaces(cluster="c1", kube=kube, statuses=["Deleted"])
 
     assert "Deleted" in info.value.message
     kube.list_namespace.assert_not_called()
@@ -189,7 +195,7 @@ def test_an_unknown_status_is_refused_before_kubernetes_is_called():
 def test_the_label_selector_is_left_to_kubernetes():
     kube = _kube(_ns("a"))
 
-    NamespaceService().list_namespaces(cluster="c1", kube=kube, label_selector="team=a")
+    _svc().list_namespaces(cluster="c1", kube=kube, label_selector="team=a")
 
     assert kube.list_namespace.call_args.kwargs["label_selector"] == "team=a"
 
@@ -199,7 +205,7 @@ def test_a_malformed_label_selector_is_a_validation_error():
     kube.list_namespace.side_effect = ApiException(status=400, reason="Bad Request")
 
     with pytest.raises(ValidationException) as info:
-        NamespaceService().list_namespaces(cluster="c1", kube=kube, label_selector="=oops")
+        _svc().list_namespaces(cluster="c1", kube=kube, label_selector="=oops")
 
     assert info.value.http_status == 422
     assert "=oops" in info.value.message
@@ -209,24 +215,53 @@ def test_a_malformed_label_selector_is_a_validation_error():
 
 
 def _create(kube: MagicMock, name: str = "team-a"):
-    return NamespaceService().create_namespace(
-        cluster="c1", name=name, user="alice", kube=kube
+    return _svc().create_namespace(
+        cluster="c1", name=name, user="alice", request_id="req-1", kube=kube
     )
 
 
-def test_creates_a_namespace_carrying_nothing_but_its_name():
+def test_creates_a_namespace_stamped_with_its_provenance():
+    """ADR 0002: who, when and in which request — under the configured prefix.
+    No label of the service's own."""
     kube = MagicMock()
-    kube.create_namespace.return_value = _ns("team-a")
+    kube.create_namespace.side_effect = lambda body: body
 
     result = _create(kube)
 
-    assert (result.cluster, result.name, result.status) == ("c1", "team-a", "Active")
     body = kube.create_namespace.call_args.args[0]
     assert body.metadata.name == "team-a"
-    # No label, no annotation of the service's own: provenance is the
-    # gateway's audit trail, not something stamped on the cluster.
     assert not body.metadata.labels
-    assert not body.metadata.annotations
+    assert body.metadata.annotations == {
+        "cs.acme.io/created-by": "alice",
+        "cs.acme.io/created-at": "2026-10-25T08:30:00Z",
+        "cs.acme.io/last-request-id": "req-1",
+    }
+    assert result.annotations == body.metadata.annotations
+
+
+def test_created_at_is_utc_whatever_the_clock_zone():
+    kube = MagicMock()
+    kube.create_namespace.side_effect = lambda body: body
+    taipei = timezone(timedelta(hours=8))
+    svc = NamespaceService(
+        provenance_prefix=_PREFIX, clock=lambda: datetime(2026, 10, 25, 16, 30, tzinfo=taipei)
+    )
+
+    svc.create_namespace(cluster="c1", name="team-a", user="alice", request_id="r", kube=kube)
+
+    body = kube.create_namespace.call_args.args[0]
+    assert body.metadata.annotations["cs.acme.io/created-at"] == "2026-10-25T08:30:00Z"
+
+
+def test_a_request_without_an_id_leaves_last_request_id_out():
+    """An empty annotation would read as "the request id was empty" — leave it out."""
+    kube = MagicMock()
+    kube.create_namespace.side_effect = lambda body: body
+
+    _svc().create_namespace(cluster="c1", name="team-a", user="alice", request_id="", kube=kube)
+
+    body = kube.create_namespace.call_args.args[0]
+    assert "cs.acme.io/last-request-id" not in body.metadata.annotations
 
 
 def test_a_creation_is_logged_with_who_asked(caplog):

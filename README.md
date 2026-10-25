@@ -104,8 +104,11 @@ router (app/api/v1/)
 | `POST` | `/api/v1/clusters/{cluster}/namespaces` | Create a namespace from `{"name": "..."}` only; 201. `default` / `kube-*`, non-DNS-1123 names and any other body field (`labels` included) are 422. 409 `NAMESPACE_ALREADY_EXISTS`, with `detail.status` = `Terminating` when the existing one is still being deleted |
 
 There is no delete endpoint: deleting a namespace takes everything in it.
-The service adds no label or annotation to a namespace it creates (who created
-it is in the API gateway's audit log and an INFO log line here).
+A created namespace is stamped with **provenance annotations** under
+`PROVENANCE_ANNOTATION_PREFIX`: `<prefix>/created-by` (the token's account),
+`<prefix>/created-at` (UTC) and `<prefix>/last-request-id` (`X-Coordination-ID`).
+They are a pointer back to the logs, not an audit record — anyone with direct
+cluster access can change them (ADR 0002).
 
 > ⚠️ A new namespace grants cluster-service **nothing** inside it. Its
 > ConfigMaps stay unreadable until that namespace is given the per-namespace
@@ -143,7 +146,7 @@ Settings are loaded from `.env` then `.env.{APP_ENV}` (override order). The `APP
 |------|---------|
 | `.env` | Base values (always loaded) |
 | `.env.dev` | Dev overrides (`DEBUG=true`, etc.) |
-| `.env.prod` | Prod overrides (replace `SECRET_KEY`) |
+| `.env.prod` | Prod overrides (replace `SECRET_KEY` and `PROVENANCE_ANNOTATION_PREFIX`) |
 | `.env.test` | Test overrides (short token TTL, fixture user path) |
 
 Key settings:
@@ -155,6 +158,7 @@ Key settings:
 | `SECRET_KEY` | *(required)* | JWT signing secret — **must be changed in prod** |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | JWT TTL in minutes |
 | `USERS_JSON_PATH` | `data/users.json` | Path to the user store |
+| `PROVENANCE_ANNOTATION_PREFIX` | *(required)* | Domain your organisation controls (e.g. `cluster-service.acme.io`, no trailing `/`) that the service's namespace annotations live under. Startup fails if unset, not a DNS subdomain, or under `kubernetes.io` / `k8s.io`. **Replace in prod**; changing it later leaves old annotations behind |
 
 ---
 

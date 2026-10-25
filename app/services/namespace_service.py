@@ -10,6 +10,8 @@ namespace: deletion takes everything inside it, irreversibly.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import get_args
 
 from kubernetes.client import CoreV1Api, V1Namespace, V1NamespaceList, V1ObjectMeta
@@ -44,17 +46,30 @@ _PHASES: dict[str, NamespacePhase] = {p.lower(): p for p in get_args(NamespacePh
 
 
 class NamespaceService:
-    """Lists namespaces, reads one, and creates one."""
+    """Lists namespaces, reads one, and creates one.
+
+    ``provenance_prefix`` is the domain the service's provenance annotations
+    live under (ADR 0002); ``clock`` is injectable so their timestamps can be
+    asserted.
+    """
+
+    def __init__(
+        self,
+        provenance_prefix: str,
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    ) -> None:
+        self._prefix = provenance_prefix
+        self._clock = clock
 
     def create_namespace(
-        self, cluster: str, name: str, user: str, kube: CoreV1Api
+        self, cluster: str, name: str, user: str, request_id: str, kube: CoreV1Api
     ) -> NamespaceDetailData:
-        """Create a namespace carrying nothing but its name.
+        """Create a namespace stamped with its provenance annotations.
 
         The name is validated (DNS-1123 label, not reserved) by the request
-        model before this is called. No label or annotation of the service's
-        own is added: who created it is the API gateway's audit trail, and this
-        log line.
+        model before this is called. The annotations say who (``user``, the
+        authenticated account), when, and in which request — a pointer back to
+        the audit trail, not an audit record (ADR 0002).
 
         Raises:
             NamespaceAlreadyExistsException: The name is taken — by a namespace
@@ -64,7 +79,13 @@ class NamespaceService:
         """
         with translate_kube_errors(cluster, f"create namespace '{name}' in cluster '{cluster}'"):
             try:
-                ns = kube.create_namespace(V1Namespace(metadata=V1ObjectMeta(name=name)))
+                ns = kube.create_namespace(
+                    V1Namespace(
+                        metadata=V1ObjectMeta(
+                            name=name, annotations=self._provenance("created", user, request_id)
+                        )
+                    )
+                )
             except ApiException as exc:
                 if exc.status != 409:
                     raise
@@ -139,6 +160,16 @@ class NamespaceService:
 
         _logger.info("Read namespace | cluster=%s | name=%s", cluster, name)
         return _to_detail(cluster, ns)
+
+    def _provenance(self, verb: str, user: str, request_id: str) -> dict[str, str]:
+        """``<prefix>/<verb>-by``, ``<prefix>/<verb>-at`` and
+        ``<prefix>/last-request-id`` — the last left out when there is no id,
+        rather than recorded as an empty one."""
+        at = self._clock().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stamp = {f"{self._prefix}/{verb}-by": user, f"{self._prefix}/{verb}-at": at}
+        if request_id:
+            stamp[f"{self._prefix}/last-request-id"] = request_id
+        return stamp
 
     @staticmethod
     def _already_exists(
