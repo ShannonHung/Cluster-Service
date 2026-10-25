@@ -10,7 +10,7 @@ place an SDK failure becomes an application exception.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 
 from kubernetes.client.exceptions import ApiException
@@ -26,12 +26,11 @@ def connection_error(cluster: str, exc: Urllib3HTTPError) -> KubeApiException:
     cluster apart from a per-node failure and propagate it instead of
     reporting it once per node.
     """
-    err = KubeApiException(
+    return KubeApiException(
         f"Cannot reach cluster '{cluster}': {exc}",
         kube_status=503,
+        cluster_level=True,
     )
-    err.cluster_level = True
-    return err
 
 
 @contextmanager
@@ -40,7 +39,7 @@ def translate_kube_errors(
     what: str,
     *,
     not_found: Callable[[], BaseAppException] | None = None,
-) -> Iterator[None]:
+) -> Generator[None, None, None]:
     """Translate SDK failures raised inside the block.
 
     - ``ApiException`` → ``KubeApiException("Failed to <what>: <reason>")``

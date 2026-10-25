@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import html
 import logging
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from fastapi import FastAPI, Depends, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -50,7 +50,7 @@ _logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager.
 
     Startup:  configure logging, validate config.
