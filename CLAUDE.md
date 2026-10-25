@@ -223,7 +223,7 @@ A router short-circuit is correct for `drain`: it is a caller-facing validation 
 |------|---------|
 | `.env` | Base values (always loaded) |
 | `.env.dev` | Dev overrides (`DEBUG=true`, etc.) |
-| `.env.prod` | Prod overrides (replace `SECRET_KEY`) |
+| `.env.prod` | Prod overrides (replace `SECRET_KEY`; `PROVENANCE_ANNOTATION_PREFIX` deliberately unset — the deployment supplies it) |
 | `.env.test` | Test overrides (short token TTL, fixture user path) |
 
 ## Tests

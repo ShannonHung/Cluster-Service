@@ -62,8 +62,17 @@ def test_a_domain_merely_ending_in_the_same_letters_is_not_reserved():
     assert _settings(PROVENANCE_ANNOTATION_PREFIX="notkubernetes.io")
 
 
-@pytest.mark.parametrize("env_file", [".env", ".env.dev", ".env.test", ".env.prod"])
-def test_every_shipped_env_file_sets_a_usable_value(env_file, monkeypatch):
+@pytest.mark.parametrize("env_file", [".env.dev", ".env.test"])
+def test_dev_and_test_env_files_set_a_usable_value(env_file, monkeypatch):
     monkeypatch.delenv("PROVENANCE_ANNOTATION_PREFIX", raising=False)
-    settings = Settings(_env_file=env_file)
-    assert settings.PROVENANCE_ANNOTATION_PREFIX
+    assert Settings(_env_file=env_file).PROVENANCE_ANNOTATION_PREFIX
+
+
+@pytest.mark.parametrize("env_file", [".env", ".env.prod"])
+def test_base_and_prod_env_files_leave_it_to_the_operator(env_file, monkeypatch):
+    """No placeholder where production reads from: `.env` is loaded in every
+    environment and `.env.prod` in production, so a value in either would be
+    stamped onto every namespace of a deployment that forgot to set its own."""
+    monkeypatch.delenv("PROVENANCE_ANNOTATION_PREFIX", raising=False)
+    with pytest.raises(ValidationError, match="PROVENANCE_ANNOTATION_PREFIX"):
+        Settings(_env_file=env_file)

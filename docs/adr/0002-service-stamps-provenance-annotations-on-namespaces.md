@@ -31,7 +31,10 @@ pick it correctly. For the same reason it has **no default**: the service refuse
 to start without one, and refuses a value that is not a valid DNS subdomain or
 that falls under `kubernetes.io` / `k8s.io`. A built-in placeholder would be
 silently stamped onto every namespace in a deployment that forgot to set it, and
-an unset value disabling the stamps would lose them just as silently. Consequence: changing it on a running deployment leaves the
+an unset value disabling the stamps would lose them just as silently. The same
+goes for the shipped env files: only `.env.dev` and `.env.test` set one;
+`.env` (loaded everywhere) and `.env.prod` deliberately do not, so production
+must supply its own. Consequence: changing it on a running deployment leaves the
 old annotations behind under the old prefix, and the service will neither read
 nor update them.
 

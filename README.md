@@ -149,7 +149,7 @@ Settings are loaded from `.env` then `.env.{APP_ENV}` (override order). The `APP
 |------|---------|
 | `.env` | Base values (always loaded) |
 | `.env.dev` | Dev overrides (`DEBUG=true`, etc.) |
-| `.env.prod` | Prod overrides (replace `SECRET_KEY` and `PROVENANCE_ANNOTATION_PREFIX`) |
+| `.env.prod` | Prod overrides (replace `SECRET_KEY`; `PROVENANCE_ANNOTATION_PREFIX` is deliberately absent — set it in the deployment's environment) |
 | `.env.test` | Test overrides (short token TTL, fixture user path) |
 
 Key settings:
@@ -161,7 +161,7 @@ Key settings:
 | `SECRET_KEY` | *(required)* | JWT signing secret — **must be changed in prod** |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | JWT TTL in minutes |
 | `USERS_JSON_PATH` | `data/users.json` | Path to the user store |
-| `PROVENANCE_ANNOTATION_PREFIX` | *(required)* | Domain your organisation controls (e.g. `cluster-service.acme.io`, no trailing `/`) that the service's namespace annotations live under. Startup fails if unset, not a DNS subdomain, or under `kubernetes.io` / `k8s.io`. **Replace in prod**; changing it later leaves old annotations behind |
+| `PROVENANCE_ANNOTATION_PREFIX` | *(required)* | Domain your organisation controls (e.g. `cluster-service.acme.io`, no trailing `/`) that the service's namespace annotations live under. Startup fails if unset, not a DNS subdomain, or under `kubernetes.io` / `k8s.io`. Only `.env.dev` / `.env.test` set one — **production must supply its own** through the environment; changing it later leaves old annotations behind |
 
 ---
 
