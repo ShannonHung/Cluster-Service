@@ -1336,3 +1336,38 @@ def test_cordon_many_propagates_auth_failure(status):
 
     with pytest.raises(KubeApiException):
         _svc().cordon_many(cluster="test", node_names=["n1", "n2"], kube=kube)
+
+
+# ── batch: access-policy denials ──────────────────────────────────────────────
+
+def test_cordon_many_reports_denied_nodes_in_request_order_and_never_patches_them():
+    kube = _make_kube()
+    kube.patch_node.side_effect = [None, _api_error(404, "Not Found")]
+
+    result = _svc().cordon_many(
+        cluster="test", node_names=["a", "b", "c", "b"], kube=kube,
+        denied={"b": "denied by rule 'x'"},
+    )
+
+    assert [(r.node, r.status) for r in result.results] == [
+        ("a", "success"), ("b", "denied"), ("c", "failed"),
+    ]
+    b = result.results[1]
+    assert (b.error_code, b.message, b.kube_status) == ("POLICY_DENIED", "denied by rule 'x'", None)
+    assert result.summary.model_dump() == {"total": 3, "succeeded": 1, "failed": 1, "denied": 1}
+    assert [c.args[0] for c in kube.patch_node.call_args_list] == ["a", "c"]
+
+
+def test_uncordon_many_skips_the_readiness_listing_when_every_node_is_denied():
+    kube = _make_kube()
+    result = _svc().uncordon_many(
+        cluster="test", node_names=["a", "b"], kube=kube, denied={"a": "x", "b": "y"},
+    )
+    kube.list_node.assert_not_called()
+    kube.patch_node.assert_not_called()
+    assert result.summary.denied == 2
+
+
+def test_summary_without_denials_reports_zero_denied():
+    result = _svc().cordon_many(cluster="test", node_names=["a"], kube=_make_kube())
+    assert result.summary.model_dump() == {"total": 1, "succeeded": 1, "failed": 0, "denied": 0}

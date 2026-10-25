@@ -13,6 +13,8 @@ router, with Kubernetes and deploy-service both stubbed:
 - validation: a bad body → 422, and an oversized batch → 422 *before any work*
 - business rules: uncordon of a NotReady node → 409 with no way to override
   it, and a blocked drain → 400 having touched nothing
+- access policy: a write the policy refuses → 403 ``POLICY_DENIED`` (a batch
+  node → ``denied``), having touched nothing
 - contract: the whole OpenAPI document, the ``dry_run`` marker, the
   ``X-Coordination-ID`` → ``request_id`` round trip, and the error envelope
 
@@ -405,6 +407,42 @@ def test_blocked_drain_is_400_and_touches_nothing(dry, full, options, still_bloc
     # docs/adr/0001-*. "Touched nothing" means no pod, not no cordon.
     node = dry.get(f"{_NODES}/{_READY}", headers=full).json()["data"]
     assert node["unschedulable"] is True
+
+
+# ── 403: access policy ────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def policed(monkeypatch, tmp_path) -> TestClient:
+    """A dry-run instance whose users file denies every write on prod-*."""
+    import json
+    from pathlib import Path
+
+    users = json.loads((Path(__file__).parent.parent / "fixtures" / "users.json").read_text())
+    rule = {"id": "no-prod", "actions": ["*"], "effect": "deny", "match": {"cluster": "prod-.*"}}
+    path = tmp_path / "users.json"
+    path.write_text(json.dumps({"policies": [rule], "users": users}))
+    monkeypatch.setenv("USERS_JSON_PATH", str(path))
+    _reset()
+    with _client(monkeypatch, dry_run=True) as c:
+        yield c
+    _reset()
+    get_settings.cache_clear()
+
+
+def test_a_policy_refused_drain_is_403_and_touches_nothing(policed, full):
+    resp = policed.post(f"/api/v1/clusters/prod-1/nodes/{_READY}/drain", headers=full)
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["error"]["code"] == "POLICY_DENIED"
+
+    node = policed.get(f"/api/v1/clusters/prod-1/nodes/{_READY}", headers=full).json()["data"]
+    assert node["unschedulable"] is False
+
+
+def test_a_policy_refused_batch_node_is_denied_not_failed(policed, full):
+    resp = policed.post("/api/v1/clusters/prod-1/nodes:cordon", json={"nodes": [_READY]}, headers=full)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["results"][0]["status"] == "denied"
 
 
 # ── contract ──────────────────────────────────────────────────────────────────

@@ -24,7 +24,10 @@ from app.core.security import decode_access_token
 from app.domain.models import User
 from app.repositories.cluster_repository import ClusterRepository
 from app.repositories.dry_run_cluster_repository import DryRunClusterRepository
+from app.repositories.json_policy_repository import JsonPolicyRepository
+from app.repositories.json_users_file import users_file
 from app.repositories.yaml_cluster_repository import YamlClusterRepository
+from app.services.policy_service import PolicyService
 
 # The tokenUrl must match your actual POST /token route path.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
@@ -164,3 +167,12 @@ def get_cluster_repo() -> ClusterRepository:
     if settings.DRY_RUN_MODE:
         return DryRunClusterRepository()
     return YamlClusterRepository(settings.KUBECONFIG_BASE_PATH)
+
+
+def get_policy_service() -> PolicyService:
+    """The request-parameter access policy every write route checks first.
+
+    Not a dry-run seam: the policy is a decision, and DRY_RUN_MODE must leave
+    every decision intact.
+    """
+    return PolicyService(JsonPolicyRepository(users_file(get_settings().USERS_JSON_PATH)))

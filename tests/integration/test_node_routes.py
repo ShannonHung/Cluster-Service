@@ -117,7 +117,7 @@ def test_batch_cordon_partial_failure_is_still_200(client, fake_service):
     data = body["data"]
     assert data["cluster"] == "c1"
     assert data["action"] == "cordon"
-    assert data["summary"] == {"total": 2, "succeeded": 1, "failed": 1}
+    assert data["summary"] == {"total": 2, "succeeded": 1, "failed": 1, "denied": 0}
     assert data["results"][0] == {
         "node": "n1",
         "status": "success",
@@ -210,7 +210,7 @@ def test_batch_uncordon_reports_not_ready_per_node(client, fake_service):
 
     assert r.status_code == 200
     data = r.json()["data"]
-    assert data["summary"] == {"total": 2, "succeeded": 1, "failed": 1}
+    assert data["summary"] == {"total": 2, "succeeded": 1, "failed": 1, "denied": 0}
     failed = [x for x in data["results"] if x["status"] == "failed"]
     assert failed[0]["error_code"] == "NODE_NOT_READY"
     assert failed[0]["kube_status"] == 409

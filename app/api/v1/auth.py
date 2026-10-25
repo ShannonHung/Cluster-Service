@@ -26,6 +26,7 @@ from app.domain.models import (
     User,
 )
 from app.repositories.json_user_repository import JsonUserRepository
+from app.repositories.json_users_file import users_file
 from app.services.auth_service import AuthService
 
 _logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 def _get_auth_service() -> AuthService:
     """Build AuthService with the configured repository."""
     settings = get_settings()
-    repo = JsonUserRepository(settings.USERS_JSON_PATH)
+    repo = JsonUserRepository(users_file(settings.USERS_JSON_PATH))
     return AuthService(repo)
 
 

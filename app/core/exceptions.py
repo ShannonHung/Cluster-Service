@@ -75,6 +75,10 @@ class ErrorCode(StrEnum):
     NAMESPACE_NOT_FOUND        = "NAMESPACE_NOT_FOUND"
     NAMESPACE_ALREADY_EXISTS   = "NAMESPACE_ALREADY_EXISTS"
 
+    # ── Users file / access policy (USERS_JSON_PATH) ──────────────────────────
+    POLICY_DENIED              = "POLICY_DENIED"
+    USERS_FILE_INVALID         = "USERS_FILE_INVALID"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ServiceError — abstract interface for upstream service error adapters
@@ -240,6 +244,29 @@ class ForbiddenException(BaseAppException):
     http_status = 403
     error_code = "FORBIDDEN"
     log_level = logging.WARNING
+
+
+class PolicyDeniedException(ForbiddenException):
+    """Raised when an access-policy rule refuses a write request.
+
+    Distinct from a missing scope (plain ``FORBIDDEN``): the token is fine, the
+    *parameters* — this cluster, this node — are what the policy refuses.
+    """
+
+    error_code = ErrorCode.POLICY_DENIED
+
+
+class UsersFileInvalidException(BaseAppException):
+    """Raised when USERS_JSON_PATH is missing or fails validation.
+
+    A 500, and both login and every policed write are refused while it lasts:
+    a file that cannot be trusted must fail closed — never be read as "no
+    rules", and never fall back to the last good version.
+    """
+
+    http_status = 500
+    error_code = ErrorCode.USERS_FILE_INVALID
+    log_level = logging.ERROR
 
 
 class NotFoundException(BaseAppException):

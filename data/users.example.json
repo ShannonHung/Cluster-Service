@@ -1,0 +1,74 @@
+{
+    "$comment": "Example USERS_JSON_PATH file — accounts plus access policy. Copy to data/users.json and replace every hashed_password (make hash p=<password>; the one below is the hash of 'secret'). Validate before deploying: make check-users f=<file>. Full guide: README 'Access policy'.",
+
+    "policies": [
+        {
+            "$comment": "Global rule: applies to every user, admin included. Every write on a prod-* cluster is refused.",
+            "id": "no-prod-writes",
+            "description": "prod clusters are maintained by the SRE pipeline, not through this service",
+            "actions": ["node.*", "namespace.*"],
+            "effect": "deny",
+            "match": { "cluster": "prod-.*" }
+        },
+        {
+            "$comment": "Both match keys must hit (AND): only control-plane nodes, on any cluster.",
+            "id": "protect-control-plane",
+            "description": "control-plane nodes are never cordoned, drained or tainted by hand",
+            "actions": ["node.cordon", "node.drain", "node.taint"],
+            "effect": "deny",
+            "match": { "cluster": ".*", "node": ".*-(master|control-plane)-\\d+" }
+        },
+        {
+            "id": "no-platform-namespace-labels",
+            "description": "platform namespaces are labelled by their own controllers",
+            "actions": ["namespace.label"],
+            "effect": "deny",
+            "match": { "namespace": "(cattle|istio|monitoring)-.*" }
+        }
+    ],
+
+    "users": [
+        {
+            "$comment": "No rules of its own: only the global rules above apply.",
+            "account": "admin",
+            "hashed_password": "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW",
+            "scopes": ["cluster_api", "deploy_api", "command_api", "inventory_api"]
+        },
+        {
+            "$comment": "An allow list: for the actions it names, the request must match one allow rule. node.taint is denied outright. namespace.label is in no operator rule, so only the global rules restrict it.",
+            "account": "operator",
+            "hashed_password": "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW",
+            "scopes": ["cluster_api"],
+            "policies": [
+                {
+                    "id": "operator-dev-stg-only",
+                    "description": "operator works on dev and staging clusters only",
+                    "actions": ["node.cordon", "node.uncordon", "node.drain", "node.label", "node.annotate", "namespace.create"],
+                    "effect": "allow",
+                    "match": { "cluster": "(dev|stg)-.*" }
+                },
+                {
+                    "id": "operator-no-taint",
+                    "actions": ["node.taint"],
+                    "effect": "deny",
+                    "match": { "cluster": ".*" }
+                }
+            ]
+        },
+        {
+            "$comment": "A read-only user: '*' covers every policed action, so every write is refused; reads are never policed.",
+            "account": "viewer",
+            "hashed_password": "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW",
+            "scopes": ["cluster_api"],
+            "policies": [
+                {
+                    "id": "viewer-read-only",
+                    "description": "viewer may look, not change",
+                    "actions": ["*"],
+                    "effect": "deny",
+                    "match": { "cluster": ".*" }
+                }
+            ]
+        }
+    ]
+}
