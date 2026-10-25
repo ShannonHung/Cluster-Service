@@ -24,9 +24,11 @@ from app.core.exceptions import (
 )
 from app.domain.kubernetes_models import (
     NamespaceDetailData,
+    NamespaceLabelsData,
     NamespaceListData,
     NamespacePhase,
     NamespaceSummary,
+    is_reserved_namespace_name,
 )
 from app.services.kube_errors import translate_kube_errors
 
@@ -103,6 +105,53 @@ class NamespaceService:
             "Created namespace | cluster=%s | name=%s | user=%s", cluster, name, user
         )
         return _to_detail(cluster, ns)
+
+    def update_labels(
+        self,
+        cluster: str,
+        name: str,
+        set_labels: dict[str, str],
+        remove_labels: list[str],
+        user: str,
+        request_id: str,
+        kube: CoreV1Api,
+    ) -> NamespaceLabelsData:
+        """Add / overwrite ``set_labels`` and delete ``remove_labels`` in one
+        patch, stamping ``last-modified-*`` and ``last-request-id`` alongside
+        (ADR 0002); ``created-*`` is never touched. Keys are validated by the
+        request model; a key absent from the namespace is a no-op.
+
+        Raises:
+            ValidationException: ``name`` is a Reserved namespace name.
+            NamespaceNotFoundException: The namespace does not exist.
+            KubeApiException: On any other Kubernetes API failure.
+        """
+        if is_reserved_namespace_name(name):
+            raise ValidationException(
+                f"Namespace '{name}' is reserved for Kubernetes; its labels cannot be "
+                "changed through this service.",
+            )
+        labels: dict[str, str | None] = {**set_labels, **dict.fromkeys(remove_labels)}
+        body = {
+            "metadata": {
+                "labels": labels,  # null value → Kubernetes deletes the label
+                "annotations": self._provenance("last-modified", user, request_id),
+            }
+        }
+        with translate_kube_errors(
+            cluster,
+            f"patch labels on namespace '{name}' of cluster '{cluster}'",
+            not_found=lambda: NamespaceNotFoundException(
+                f"Namespace '{name}' not found in cluster '{cluster}'.",
+            ),
+        ):
+            ns = kube.patch_namespace(name, body)
+
+        _logger.info(
+            "Patched namespace labels | cluster=%s | name=%s | set=%s | remove=%s | user=%s",
+            cluster, name, sorted(set_labels), sorted(remove_labels), user,
+        )
+        return NamespaceLabelsData(cluster=cluster, name=name, labels=ns.metadata.labels or {})
 
     def list_namespaces(
         self,

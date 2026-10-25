@@ -339,3 +339,58 @@ def test_any_other_failure_is_a_kube_api_error():
         _create(kube)
 
     assert info.value.kube_status == 403
+
+
+# ── updating labels ───────────────────────────────────────────────────────────
+
+
+def _update(kube: MagicMock, name: str = "team-a", set_labels=None, remove_labels=None):
+    return _svc().update_labels(
+        cluster="c1", name=name, set_labels=set_labels or {}, remove_labels=remove_labels or [],
+        user="bob", request_id="req-2", kube=kube,
+    )
+
+
+def test_an_update_is_one_merge_patch_with_null_for_each_removal():
+    kube = MagicMock()
+    kube.patch_namespace.return_value = _ns("team-a", labels={"team": "b"})
+
+    result = _update(kube, set_labels={"team": "b"}, remove_labels=["old"])
+
+    name, body = kube.patch_namespace.call_args.args
+    assert name == "team-a"
+    assert body["metadata"]["labels"] == {"team": "b", "old": None}
+    assert result.labels == {"team": "b"}
+    kube.patch_namespace.assert_called_once()
+
+
+def test_an_update_stamps_last_modified_and_never_created():
+    kube = MagicMock()
+    kube.patch_namespace.return_value = _ns("team-a")
+
+    _update(kube, set_labels={"team": "b"})
+
+    annotations = kube.patch_namespace.call_args.args[1]["metadata"]["annotations"]
+    assert annotations == {
+        "cs.acme.io/last-modified-by": "bob",
+        "cs.acme.io/last-modified-at": "2026-10-25T08:30:00Z",
+        "cs.acme.io/last-request-id": "req-2",
+    }
+
+
+@pytest.mark.parametrize("name", ["default", "kube-system", "kube-public"])
+def test_a_reserved_namespace_is_refused_before_kubernetes_is_called(name):
+    kube = MagicMock()
+
+    with pytest.raises(ValidationException):
+        _update(kube, name=name, set_labels={"team": "a"})
+
+    kube.patch_namespace.assert_not_called()
+
+
+def test_updating_a_missing_namespace_is_namespace_not_found():
+    kube = MagicMock()
+    kube.patch_namespace.side_effect = ApiException(status=404, reason="Not Found")
+
+    with pytest.raises(NamespaceNotFoundException):
+        _update(kube, name="ghost", set_labels={"a": "b"})

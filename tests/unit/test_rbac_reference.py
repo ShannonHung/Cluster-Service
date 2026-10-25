@@ -48,6 +48,7 @@ _PERMISSIONS: dict[str, tuple[str, str]] = {
     "list_namespace": ("namespaces", "list"),
     "create_namespace": ("namespaces", "create"),
     "read_namespace": ("namespaces", "get"),
+    "patch_namespace": ("namespaces", "patch"),
 }
 
 # API endpoints only. Every generated endpoint has a ``<name>_with_http_info``

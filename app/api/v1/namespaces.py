@@ -7,6 +7,7 @@ Routes:
   GET  /api/v1/clusters/{cluster}/namespaces        → list namespaces, filtered
   GET  /api/v1/clusters/{cluster}/namespaces/{name} → read one namespace
   POST /api/v1/clusters/{cluster}/namespaces        → create a namespace
+  PATCH /api/v1/clusters/{cluster}/namespaces/{name}/labels → set / remove labels
 
 All require the ``cluster_api`` scope. Vocabulary follows CONTEXT.md,
 "Namespaces". There is deliberately no delete: it takes everything inside the
@@ -25,6 +26,8 @@ from app.domain.kubernetes_models import (
     NAMESPACE_NAME_PATTERN,
     NamespaceCreateRequest,
     NamespaceDetailData,
+    NamespaceLabelsData,
+    NamespaceLabelsPatchRequest,
     NamespaceListData,
 )
 from app.domain.models import ApiResponse, User
@@ -147,6 +150,46 @@ async def create_namespace(
             cluster=cluster,
             name=body.name,
             labels=body.labels,
+            user=current_user.account,
+            request_id=_request_id(request),
+            kube=kube,
+        ),
+    )
+    return ApiResponse(data=data, request_id=_request_id(request))
+
+
+@router.patch(
+    "/{cluster}/namespaces/{name}/labels",
+    response_model=ApiResponse[NamespaceLabelsData],
+    summary="Set or remove namespace labels",
+    description=(
+        "``set`` adds or overwrites labels, ``remove`` deletes keys (an absent "
+        "key is a no-op); labels are never replaced wholesale. The response "
+        "holds the namespace's **full current** labels. 422 when: a key is "
+        "under ``kubernetes.io`` / ``k8s.io`` (or a subdomain) — in ``set`` or "
+        "``remove``, every such key named; a key or value is malformed; both "
+        "are empty; a key is in both; or the namespace is ``default`` / "
+        "``kube-*``. 404 ``NAMESPACE_NOT_FOUND`` when it does not exist. Also "
+        "stamps ``<PROVENANCE_ANNOTATION_PREFIX>/last-modified-by``, "
+        "``/last-modified-at`` and ``/last-request-id`` (ADR 0002)."
+    ),
+)
+async def patch_namespace_labels(
+    request: Request,
+    cluster: str,
+    body: NamespaceLabelsPatchRequest,
+    current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
+    name: str = Path(..., max_length=63, pattern=NAMESPACE_NAME_PATTERN),
+    repo: ClusterRepository = Depends(get_cluster_repo),
+) -> ApiResponse[NamespaceLabelsData]:
+    data = await call_kube(
+        repo,
+        cluster,
+        lambda kube: _service().update_labels(
+            cluster=cluster,
+            name=name,
+            set_labels=body.set,
+            remove_labels=body.remove,
             user=current_user.account,
             request_id=_request_id(request),
             kube=kube,

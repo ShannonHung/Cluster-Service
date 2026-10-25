@@ -120,6 +120,7 @@ _PROTECTED = [
     ("get", f"{_CLUSTER}/namespaces"),
     ("get", f"{_CLUSTER}/namespaces/default"),
     ("post", f"{_CLUSTER}/namespaces"),
+    ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/labels"),
     ("post", "/api/v1/deploy"),
     ("get", "/api/v1/deploy/1"),
     ("get", "/api/v1/command/info"),
@@ -157,6 +158,7 @@ def test_garbage_token_is_401(dry, method, path):
         ("get", f"{_CLUSTER}/namespaces"),
         ("get", f"{_CLUSTER}/namespaces/default"),
         ("post", f"{_CLUSTER}/namespaces"),
+        ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/labels"),
     ],
 )
 def test_missing_cluster_api_is_403(dry, method, path):
@@ -168,6 +170,16 @@ def test_missing_cluster_api_is_403(dry, method, path):
 def test_a_403_create_created_no_namespace(dry, full):
     dry.post(f"{_CLUSTER}/namespaces", headers=_all_but("cluster_api"), json={"name": "denied-ns"})
     assert dry.get(f"{_CLUSTER}/namespaces/denied-ns", headers=full).status_code == 404
+
+
+def test_a_403_label_update_changed_nothing(dry, full):
+    before = dry.get(f"{_CLUSTER}/namespaces/dry-run-apps", headers=full).json()["data"]
+    dry.patch(
+        f"{_CLUSTER}/namespaces/dry-run-apps/labels",
+        headers=_all_but("cluster_api"),
+        json={"set": {"denied": "yes"}},
+    )
+    assert dry.get(f"{_CLUSTER}/namespaces/dry-run-apps", headers=full).json()["data"] == before
 
 
 def test_a_403_cordon_changed_nothing(dry, full):
@@ -239,6 +251,13 @@ def test_missing_command_api_is_403(dry, method, path):
         ),
         ("post", f"{_CLUSTER}/namespaces", {"name": "Not_A_DNS_Label"}),
         ("post", f"{_CLUSTER}/namespaces", {"name": "kube-new"}),
+        (
+            "patch",
+            f"{_CLUSTER}/namespaces/dry-run-apps/labels",
+            {"remove": ["pod-security.kubernetes.io/enforce"]},
+        ),
+        ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/labels", {}),
+        ("patch", f"{_CLUSTER}/namespaces/kube-system/labels", {"set": {"team": "a"}}),
     ],
 )
 def test_invalid_body_is_422(dry, full, method, path, body):

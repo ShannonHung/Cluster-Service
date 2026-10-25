@@ -102,11 +102,14 @@ router (app/api/v1/)
 | `GET` | `/api/v1/clusters/{cluster}/namespaces` | List namespaces; filter by `name` (prefixes), `status` (`Active` / `Terminating`), `label_selector`. Returns every match (paging is internal) |
 | `GET` | `/api/v1/clusters/{cluster}/namespaces/{name}` | Read one namespace; 404 `NAMESPACE_NOT_FOUND` |
 | `POST` | `/api/v1/clusters/{cluster}/namespaces` | Create a namespace from `{"name": "...", "labels": {...}}` (`labels` optional); 201. `default` / `kube-*`, non-DNS-1123 names, malformed labels, label keys under `kubernetes.io` / `k8s.io` (or a subdomain) and any other body field are 422. 409 `NAMESPACE_ALREADY_EXISTS`, with `detail.status` = `Terminating` when the existing one is still being deleted |
+| `PATCH` | `/api/v1/clusters/{cluster}/namespaces/{name}/labels` | `{"set": {...}, "remove": [...]}` — add/overwrite and delete labels key by key (absent key = no-op); returns the full current labels. 422 for `kubernetes.io` / `k8s.io` keys (in `set` or `remove`), malformed labels, an empty or contradictory body, or `default` / `kube-*`. 404 `NAMESPACE_NOT_FOUND`. Stamps `last-modified-by` / `-at` / `last-request-id` |
 
 There is no delete endpoint: deleting a namespace takes everything in it.
 A created namespace is stamped with **provenance annotations** under
 `PROVENANCE_ANNOTATION_PREFIX`: `<prefix>/created-by` (the token's account),
-`<prefix>/created-at` (UTC) and `<prefix>/last-request-id` (`X-Coordination-ID`).
+`<prefix>/created-at` (UTC) and `<prefix>/last-request-id` (`X-Coordination-ID`);
+a label update stamps `<prefix>/last-modified-by`, `<prefix>/last-modified-at`
+and `last-request-id`, never touching `created-*`.
 They are a pointer back to the logs, not an audit record — anyone with direct
 cluster access can change them (ADR 0002).
 
@@ -225,6 +228,7 @@ namespace instead.
 | `GET /clusters/{cluster}/namespaces` | `namespaces` | `list` |
 | `GET /clusters/{cluster}/namespaces/{name}` | `namespaces` | `get` |
 | `POST /clusters/{cluster}/namespaces` | `namespaces` | `create`, `get` (`get` only on 409, to tell a Terminating namespace apart) |
+| `PATCH /clusters/{cluster}/namespaces/{name}/labels` | `namespaces` | `patch` |
 
 All paths are under `/api/v1`. `GET /clusters` reads local config only and
 needs no Kubernetes permission.

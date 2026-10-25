@@ -271,3 +271,116 @@ def test_a_malformed_label_is_422_and_nothing_is_created(client, headers, labels
     assert resp.status_code == 422
     assert "team-a" not in _list(client, headers)
 
+
+
+# ── updating labels ───────────────────────────────────────────────────────────
+
+
+def _patch(client, headers, name, body, request_id=None):
+    if request_id:
+        headers = {**headers, "X-Coordination-ID": request_id}
+    return client.patch(f"{_URL}/{name}/labels", headers=headers, json=body)
+
+
+def _read(client, headers, name):
+    return client.get(f"{_URL}/{name}", headers=headers).json()["data"]
+
+
+def test_set_adds_and_overwrites_remove_deletes(client, headers):
+    _create(client, headers, {"name": "team-a", "labels": {"team": "a", "tier": "gold", "old": "x"}})
+
+    resp = _patch(client, headers, "team-a", {"set": {"tier": "silver", "env": "prod"}, "remove": ["old"]})
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert (data["cluster"], data["name"]) == ("any-cluster", "team-a")
+    expected = {"team": "a", "tier": "silver", "env": "prod", "kubernetes.io/metadata.name": "team-a"}
+    assert data["labels"] == expected
+    assert _read(client, headers, "team-a")["labels"] == expected
+
+
+def test_removing_a_label_that_is_not_there_succeeds(client, headers):
+    _create(client, headers, {"name": "team-a", "labels": {"team": "a"}})
+
+    resp = _patch(client, headers, "team-a", {"remove": ["never-there"]})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["labels"]["team"] == "a"
+
+
+def test_an_update_stamps_last_modified_and_leaves_created_alone(client, headers):
+    """ADR 0002: created-* is written once; last-modified-* moves per update."""
+    _create(client, headers, {"name": "team-a"})
+    created = _read(client, headers, "team-a")["annotations"]
+
+    _patch(client, headers, "team-a", {"set": {"team": "a"}}, request_id="req-patch")
+
+    annotations = _read(client, headers, "team-a")["annotations"]
+    assert annotations["cluster-service.test/created-by"] == created["cluster-service.test/created-by"]
+    assert annotations["cluster-service.test/created-at"] == created["cluster-service.test/created-at"]
+    assert annotations["cluster-service.test/last-modified-by"] == "test_admin"
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", annotations["cluster-service.test/last-modified-at"])
+    assert annotations["cluster-service.test/last-request-id"] == "req-patch"
+
+
+def test_a_namespace_the_service_did_not_create_can_be_relabelled(client, headers):
+    resp = _patch(client, headers, "dry-run-apps", {"set": {"team": "apps"}})
+
+    assert resp.status_code == 200, resp.text
+    annotations = _read(client, headers, "dry-run-apps")["annotations"]
+    assert annotations["cluster-service.test/last-modified-by"] == "test_admin"
+    assert "cluster-service.test/created-by" not in annotations
+    # Everything else on it is left as it was.
+    assert annotations["meta.helm.sh/release-name"] == "dry-run-release"
+
+
+def test_relabelling_a_missing_namespace_is_404(client, headers):
+    resp = _patch(client, headers, "ghost", {"set": {"a": "b"}})
+
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "NAMESPACE_NOT_FOUND"
+
+
+@pytest.mark.parametrize("name", ["default", "kube-system"])
+def test_a_reserved_namespace_cannot_be_relabelled(client, headers, name):
+    before = _read(client, headers, name)["labels"]
+
+    resp = _patch(client, headers, name, {"set": {"team": "a"}})
+
+    assert resp.status_code == 422
+    assert _read(client, headers, name)["labels"] == before
+
+
+@pytest.mark.parametrize("field", ["set", "remove"])
+def test_reserved_label_keys_cannot_be_set_or_removed(client, headers, field):
+    _create(client, headers, {"name": "team-a"})
+    keys = ["pod-security.kubernetes.io/enforce", "kubernetes.io/metadata.name"]
+    body = {"set": dict.fromkeys(keys, "x")} if field == "set" else {"remove": keys}
+
+    resp = _patch(client, headers, "team-a", body)
+
+    assert resp.status_code == 422
+    for key in keys:
+        assert key in resp.text
+    assert _read(client, headers, "team-a")["labels"] == {"kubernetes.io/metadata.name": "team-a"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"set": {}, "remove": []},
+        {"set": {"team": "a"}, "remove": ["team"]},
+        {"set": {"Bad Key": "x"}},
+        {"remove": ["-bad"]},
+        {"set": {"team": "has space"}},
+        {"set": {"team": "a"}, "replace": True},
+    ],
+    ids=["empty", "both-empty", "same-key-both", "bad-key", "bad-remove-key", "bad-value", "unknown-field"],
+)
+def test_a_malformed_update_is_422_and_changes_nothing(client, headers, body):
+    _create(client, headers, {"name": "team-a"})
+    before = _read(client, headers, "team-a")
+
+    assert _patch(client, headers, "team-a", body).status_code == 422
+    assert _read(client, headers, "team-a") == before

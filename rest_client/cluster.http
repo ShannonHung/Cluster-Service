@@ -277,3 +277,45 @@ Content-Type: application/json
 
 ### 401 — no token
 GET {{baseUrl}}/api/v1/clusters
+
+
+# ══════════════════════════════════════════════════════
+# Namespaces
+# ══════════════════════════════════════════════════════
+
+### List namespaces (filters: name prefixes, status, label_selector)
+GET {{baseUrl}}/api/v1/clusters/{{cluster}}/namespaces?label_selector=team=demo
+Authorization: Bearer {{token}}
+
+### Read one namespace (labels + provenance annotations)
+GET {{baseUrl}}/api/v1/clusters/{{cluster}}/namespaces/demo-team
+Authorization: Bearer {{token}}
+
+### Create a namespace with labels
+POST {{baseUrl}}/api/v1/clusters/{{cluster}}/namespaces
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "demo-team",
+  "labels": {"team": "demo", "tier": "gold"}
+}
+
+### Set / remove namespace labels
+PATCH {{baseUrl}}/api/v1/clusters/{{cluster}}/namespaces/demo-team/labels
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "set": {"tier": "silver"},
+  "remove": ["obsolete"]
+}
+
+### Reserved label key → 422 (would loosen Pod Security)
+PATCH {{baseUrl}}/api/v1/clusters/{{cluster}}/namespaces/demo-team/labels
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "set": {"pod-security.kubernetes.io/enforce": "privileged"}
+}
