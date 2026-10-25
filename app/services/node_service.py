@@ -82,10 +82,10 @@ def unique_node_names(node_names: list[str]) -> list[str]:
 
 
 def denied_result(node_name: str, reason: str) -> BatchNodeResult:
-    """A node the access policy refused: never sent to Kubernetes."""
+    """A node the access policy refused: a failure, never sent to Kubernetes."""
     return BatchNodeResult(
         node=node_name,
-        status="denied",
+        status="failed",
         error_code=str(ErrorCode.POLICY_DENIED),
         message=reason,
     )
@@ -95,17 +95,14 @@ def batch_data(
     cluster: str, action: str, results: list[BatchNodeResult],
 ) -> BatchNodeActionData:
     """The one place a batch summary is counted."""
-    def count(status: str) -> int:
-        return sum(1 for r in results if r.status == status)
-
+    succeeded = sum(1 for r in results if r.status == "success")
     return BatchNodeActionData(
         cluster=cluster,
         action=action,
         summary=BatchSummary(
             total=len(results),
-            succeeded=count("success"),
-            failed=count("failed"),
-            denied=count("denied"),
+            succeeded=succeeded,
+            failed=len(results) - succeeded,
         ),
         results=results,
     )
@@ -265,8 +262,8 @@ class NodeService:
 
         Node-level failures are collected into the response; they never abort
         the batch. Cluster-level failures (unreachable API server) propagate.
-        Nodes in ``denied`` (node → reason) are reported as ``denied`` and
-        never patched.
+        Nodes in ``denied`` (node → reason) fail with ``POLICY_DENIED`` and
+        are never patched.
         """
         return self._batch_set_unschedulable(
             cluster, node_names, kube, unschedulable=True, action="cordon",
@@ -284,8 +281,8 @@ class NodeService:
 
         Node-level failures are collected into the response; they never abort
         the batch. Cluster-level failures (unreachable API server) propagate.
-        Nodes in ``denied`` (node → reason) are reported as ``denied`` and
-        never patched.
+        Nodes in ``denied`` (node → reason) fail with ``POLICY_DENIED`` and
+        are never patched.
         """
         return self._batch_set_unschedulable(
             cluster, node_names, kube, unschedulable=False, action="uncordon",

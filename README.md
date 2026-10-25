@@ -266,7 +266,7 @@ An `allow` rule restricts **only the actions it lists**: an operator allow-liste
 #### What the caller sees
 
 - A refused single-resource write: `403 POLICY_DENIED`, nothing sent to Kubernetes. The message names the rule and its `description`; `detail` holds `action`, `layer` (`global` / `user`), `rule_id` (`null` when no `allow` matched) and `params`.
-- A refused node in a batch: `"status": "denied"` in `results` (`error_code: POLICY_DENIED`, the reason in `message`), counted in `summary.denied`; the other nodes proceed, and the response is still 200. A fully refused batch never contacts the cluster. **Check `succeeded == total`** for a clean batch — `failed == 0` misses denials.
+- A refused node in a batch: an ordinary `"status": "failed"` entry in `results`, counted in `summary.failed`, with `error_code: POLICY_DENIED`, the reason in `message` and no `kube_status` (it was never sent to Kubernetes). The other nodes proceed, and the response is still 200 — the batch response shape is unchanged. A fully refused batch never contacts the cluster.
 
 Edits apply on the next request; no restart is needed. Design: [ADR 0003](docs/adr/0003-access-policy-lives-in-the-users-file-and-only-tightens.md).
 

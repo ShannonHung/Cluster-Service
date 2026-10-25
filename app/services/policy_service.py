@@ -7,8 +7,8 @@ PolicyService — applies the request-parameter access policy
 Routers call it **before** any Kubernetes work, with the values the request
 will actually act on. Single-resource routes call ``enforce`` (403
 ``POLICY_DENIED``); batches go through ``NodeBatchService``, which calls
-``denied_nodes`` and reports each refused node as ``denied`` in ``results``
-while the rest of the batch proceeds.
+``denied_nodes`` and reports each refused node as a ``POLICY_DENIED`` failure
+in ``results`` while the rest of the batch proceeds.
 """
 
 from __future__ import annotations

@@ -545,17 +545,17 @@ class BatchNodeRequest(BaseModel):
 class BatchNodeResult(BaseModel):
     """Outcome for a single node in a batch.
 
-    One shape for every outcome: success entries leave the three error fields
+    One shape for both outcomes: success entries leave the three error fields
     unset. A success/failure union was rejected — it generates an awkward
     ``anyOf`` in OpenAPI-derived clients.
 
-    ``denied`` means the access policy refused the node before anything was
-    sent to Kubernetes: ``error_code`` is ``POLICY_DENIED``, ``message`` names
-    the rule, ``kube_status`` is unset.
+    A node the access policy refused is an ordinary failure with
+    ``error_code`` ``POLICY_DENIED`` (the rule in ``message``) and no
+    ``kube_status``: it was never sent to Kubernetes.
     """
 
     node: str
-    status: Literal["success", "failed", "denied"]
+    status: Literal["success", "failed"]
     error_code: Optional[str] = None
     message: Optional[str] = None
     kube_status: Optional[int] = Field(
@@ -565,19 +565,11 @@ class BatchNodeResult(BaseModel):
 
 
 class BatchSummary(BaseModel):
-    """Aggregate counts for a batch, so callers can branch on one field.
-
-    ``total = succeeded + failed + denied``. A caller checking for a clean run
-    should test ``succeeded == total``: ``failed == 0`` alone misses denials.
-    """
+    """Aggregate counts for a batch, so callers can branch on one field."""
 
     total: int
     succeeded: int
     failed: int
-    denied: int = Field(
-        default=0,
-        description="Nodes refused by the access policy; never sent to Kubernetes.",
-    )
 
 
 class BatchNodeActionData(BaseModel):

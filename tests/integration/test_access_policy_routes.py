@@ -189,14 +189,16 @@ def test_batch_reports_denied_nodes_and_runs_the_rest(client, admin):
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
     assert [(r["node"], r["status"]) for r in data["results"]] == [
-        (_READY, "denied"),
+        (_READY, "failed"),
         (_OTHER, "success"),
         ("no-such-node", "failed"),
     ]
     denied = data["results"][0]
     assert denied["error_code"] == "POLICY_DENIED"
     assert "keep-ready-node" in denied["message"]
-    assert data["summary"] == {"total": 3, "succeeded": 1, "failed": 1, "denied": 1}
+    assert denied["kube_status"] is None
+    assert data["results"][2]["error_code"] == "NODE_NOT_FOUND"
+    assert data["summary"] == {"total": 3, "succeeded": 1, "failed": 2}
 
     node = client.get(f"/api/v1/clusters/dev-1/nodes/{_READY}", headers=admin).json()["data"]
     assert node["unschedulable"] is False
@@ -210,7 +212,8 @@ def test_a_fully_denied_batch_is_still_200(client, admin):
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
     assert data["action"] == "uncordon"
-    assert data["summary"] == {"total": 2, "succeeded": 0, "failed": 0, "denied": 2}
+    assert data["summary"] == {"total": 2, "succeeded": 0, "failed": 2}
+    assert {r["error_code"] for r in data["results"]} == {"POLICY_DENIED"}
 
 
 # ── broken policy fails closed ────────────────────────────────────────────────
@@ -318,8 +321,9 @@ def test_every_write_is_refused_before_the_cluster_is_touched(
 
     if ":" in path.rsplit("/", 1)[-1]:  # batch: always 200, every node denied
         assert resp.status_code == 200, resp.text
-        summary = resp.json()["data"]["summary"]
-        assert summary["denied"] == summary["total"] > 0
+        data = resp.json()["data"]
+        assert data["summary"]["failed"] == data["summary"]["total"] > 0
+        assert {r["error_code"] for r in data["results"]} == {"POLICY_DENIED"}
     else:
         assert resp.status_code == 403, resp.text
         assert resp.json()["error"]["code"] == "POLICY_DENIED"

@@ -73,7 +73,9 @@ async def test_denied_nodes_reach_node_service_as_denied(kube_calls):
     assert kube_calls == ["c1"]
     action, names, denied = nodes.calls[0]
     assert (action, names, list(denied)) == ("cordon", ["w-1", "cp-0"], ["cp-0"])
-    assert [(r.node, r.status) for r in data.results] == [("w-1", "success"), ("cp-0", "denied")]
+    assert [(r.node, r.status, r.error_code) for r in data.results] == [
+        ("w-1", "success", None), ("cp-0", "failed", "POLICY_DENIED"),
+    ]
 
 
 async def test_policy_is_judged_under_the_matching_action(kube_calls):
@@ -84,8 +86,8 @@ async def test_policy_is_judged_under_the_matching_action(kube_calls):
     cordon = await svc.run(user=_USER, repo=None, cluster="c", action="cordon", node_names=["n"])
     uncordon = await svc.run(user=_USER, repo=None, cluster="c", action="uncordon", node_names=["n"])
 
-    assert cordon.summary.denied == 0
-    assert uncordon.summary.denied == 1
+    assert cordon.summary.failed == 0
+    assert uncordon.summary.failed == 1
 
 
 async def test_a_fully_denied_batch_never_resolves_the_cluster(kube_calls):
@@ -96,7 +98,8 @@ async def test_a_fully_denied_batch_never_resolves_the_cluster(kube_calls):
     assert kube_calls == []
     assert nodes.calls == []
     assert data.action == "uncordon"
-    assert data.summary.model_dump() == {"total": 2, "succeeded": 0, "failed": 0, "denied": 2}
+    assert data.summary.model_dump() == {"total": 2, "succeeded": 0, "failed": 2}
+    assert {r.error_code for r in data.results} == {"POLICY_DENIED"}
 
 
 async def test_an_empty_batch_still_resolves_the_cluster(kube_calls):

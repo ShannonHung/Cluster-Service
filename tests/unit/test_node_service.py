@@ -1340,7 +1340,7 @@ def test_cordon_many_propagates_auth_failure(status):
 
 # ── batch: access-policy denials ──────────────────────────────────────────────
 
-def test_cordon_many_reports_denied_nodes_in_request_order_and_never_patches_them():
+def test_cordon_many_reports_denied_nodes_as_failures_and_never_patches_them():
     kube = _make_kube()
     kube.patch_node.side_effect = [None, _api_error(404, "Not Found")]
 
@@ -1350,11 +1350,12 @@ def test_cordon_many_reports_denied_nodes_in_request_order_and_never_patches_the
     )
 
     assert [(r.node, r.status) for r in result.results] == [
-        ("a", "success"), ("b", "denied"), ("c", "failed"),
+        ("a", "success"), ("b", "failed"), ("c", "failed"),
     ]
     b = result.results[1]
     assert (b.error_code, b.message, b.kube_status) == ("POLICY_DENIED", "denied by rule 'x'", None)
-    assert result.summary.model_dump() == {"total": 3, "succeeded": 1, "failed": 1, "denied": 1}
+    assert result.results[2].error_code == "NODE_NOT_FOUND"
+    assert result.summary.model_dump() == {"total": 3, "succeeded": 1, "failed": 2}
     assert [c.args[0] for c in kube.patch_node.call_args_list] == ["a", "c"]
 
 
@@ -1365,9 +1366,15 @@ def test_uncordon_many_skips_the_readiness_listing_when_every_node_is_denied():
     )
     kube.list_node.assert_not_called()
     kube.patch_node.assert_not_called()
-    assert result.summary.denied == 2
+    assert result.summary.model_dump() == {"total": 2, "succeeded": 0, "failed": 2}
+    assert {r.error_code for r in result.results} == {"POLICY_DENIED"}
 
 
-def test_summary_without_denials_reports_zero_denied():
-    result = _svc().cordon_many(cluster="test", node_names=["a"], kube=_make_kube())
-    assert result.summary.model_dump() == {"total": 1, "succeeded": 1, "failed": 0, "denied": 0}
+def test_the_batch_contract_is_unchanged_by_the_policy():
+    """Denials ride on the existing shape: no new status, no new summary field."""
+    from typing import get_args
+
+    from app.domain.kubernetes_models import BatchNodeResult, BatchSummary
+
+    assert set(BatchSummary.model_fields) == {"total", "succeeded", "failed"}
+    assert set(get_args(BatchNodeResult.model_fields["status"].annotation)) == {"success", "failed"}

@@ -3,8 +3,8 @@ app/services/node_batch_service.py
 
 NodeBatchService — runs a batch cordon / uncordon under the access policy.
 
-The policy is judged per node first; refused nodes come back as ``denied`` in
-``results`` and the rest go to NodeService through ``call_kube`` (off the event
+The policy is judged per node first; refused nodes come back as failures with
+``POLICY_DENIED`` in ``results`` and the rest go to NodeService through ``call_kube`` (off the event
 loop, as every Kubernetes call must). A batch the policy refused entirely
 never resolves the cluster at all: nothing would be sent to it.
 """

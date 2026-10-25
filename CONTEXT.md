@@ -83,9 +83,10 @@ the global ones.
 **Policed action** — A write the access policy can refuse, named
 `<resource>.<verb>` (`node.drain`, `namespace.create`). Reads are never policed.
 
-**Denied** — A batch node the access policy refused: reported in `results`
-with `status: denied`, never sent to Kubernetes. Distinct from a *per-node
-failure*, which Kubernetes was asked about.
+**Policy denial** — A batch node the access policy refused: a *per-node
+failure* with error code `POLICY_DENIED` and no Kubernetes status, because it
+was never sent to Kubernetes. Told apart from other per-node failures by its
+error code, not by a status of its own.
 
 ## Configuration resources
 

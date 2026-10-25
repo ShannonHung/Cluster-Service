@@ -17,7 +17,7 @@ Routes:
 All endpoints require the ``cluster_api`` scope. Every write is checked
 against the access policy (``PolicyService``) before Kubernetes is contacted:
 a refused single-node write is 403 ``POLICY_DENIED``; a refused node in a
-batch is reported as ``denied`` in ``results`` and the rest proceed.
+batch is a ``failed`` result with ``POLICY_DENIED`` and the rest proceed.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 
 from app.core.dependencies import get_cluster_repo, get_current_user, get_policy_service
+from app.core.exceptions import ErrorCode
 from app.domain.kubernetes_models import (
     BatchNodeActionData,
     BatchNodeRequest,
@@ -183,10 +184,9 @@ async def uncordon_node(
         "Duplicate names are de-duplicated. Cluster-level failures (unknown "
         "cluster, unreachable API server) are returned as a normal error "
         "response instead, since no node was attempted.\n\n"
-        "A node the access policy refuses is reported with status ``denied`` "
-        "(``POLICY_DENIED``, the rule in ``message``) and counted in "
-        "``summary.denied``; it is never sent to Kubernetes. A clean batch "
-        "has ``succeeded == total``."
+        "A node the access policy refuses is a ``failed`` result with "
+        "``error_code`` ``POLICY_DENIED`` (the rule in ``message``); it is "
+        "never sent to Kubernetes."
     ),
 )
 async def cordon_nodes(
@@ -266,18 +266,18 @@ async def _run_batch(
     )
 
     failed = [r.node for r in data.results if r.status == "failed"]
+    denied = [r.node for r in data.results if r.error_code == ErrorCode.POLICY_DENIED]
     _logger.info(
         "Batch %s | user=%s | cluster=%s | requested=%d | succeeded=%d | "
-        "failed=%d | denied=%d | failed_nodes=%s | denied_nodes=%s | reason=%s",
+        "failed=%d | failed_nodes=%s | policy_denied_nodes=%s | reason=%s",
         action,
         user.account,
         cluster,
         data.summary.total,
         data.summary.succeeded,
         data.summary.failed,
-        data.summary.denied,
         failed,
-        [r.node for r in data.results if r.status == "denied"],
+        denied,
         body.reason,
     )
     return ApiResponse(data=data, request_id=_request_id(request))

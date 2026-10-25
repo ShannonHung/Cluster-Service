@@ -49,9 +49,17 @@ is a hole.
 **Where it is checked.** In the router, before `call_kube`, with the values the
 request will act on. It is not a middleware (which cannot see a parsed batch
 body) and not a dry-run seam: `DRY_RUN_MODE` must leave every decision intact,
-and a request-level `drain.dry_run` previews the refusal. A batch reports refused
-nodes as `denied` (always-200 contract), and never contacts the cluster when
-every node is refused.
+and a request-level `drain.dry_run` previews the refusal. A batch reports a refused
+node as an ordinary per-node failure with error code `POLICY_DENIED`
+(always-200 contract), and never contacts the cluster when every node is
+refused.
+
+**No new response shape for batches.** A separate `denied` status and a
+`summary.denied` count were tried and dropped in review: they changed the
+batch contract, and a client treating `failed == 0` as "all done" would have
+read a partly refused batch as a clean one. Counting a denial as a failure
+keeps every existing client correct; `error_code` tells the cause apart, as it
+already does for `NODE_NOT_FOUND` vs `NODE_NOT_READY`.
 
 **Not done here.** The deploy / command / inventory proxy routes are not
 policed: their parameters (pipeline action, command name, host) are

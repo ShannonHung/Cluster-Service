@@ -14,7 +14,7 @@ router, with Kubernetes and deploy-service both stubbed:
 - business rules: uncordon of a NotReady node → 409 with no way to override
   it, and a blocked drain → 400 having touched nothing
 - access policy: a write the policy refuses → 403 ``POLICY_DENIED`` (a batch
-  node → ``denied``), having touched nothing
+  node → ``failed`` with ``POLICY_DENIED``), having touched nothing
 - contract: the whole OpenAPI document, the ``dry_run`` marker, the
   ``X-Coordination-ID`` → ``request_id`` round trip, and the error envelope
 
@@ -439,10 +439,11 @@ def test_a_policy_refused_drain_is_403_and_touches_nothing(policed, full):
     assert node["unschedulable"] is False
 
 
-def test_a_policy_refused_batch_node_is_denied_not_failed(policed, full):
+def test_a_policy_refused_batch_node_fails_with_policy_denied(policed, full):
     resp = policed.post("/api/v1/clusters/prod-1/nodes:cordon", json={"nodes": [_READY]}, headers=full)
     assert resp.status_code == 200, resp.text
-    assert resp.json()["data"]["results"][0]["status"] == "denied"
+    result = resp.json()["data"]["results"][0]
+    assert (result["status"], result["error_code"]) == ("failed", "POLICY_DENIED")
 
 
 # ── contract ──────────────────────────────────────────────────────────────────
