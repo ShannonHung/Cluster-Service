@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # ── App meta ──────────────────────────────────────────────────────────────
     APP_ENV: Literal["dev", "prod", "test"] = "dev"
     APP_NAME: str = "Cluster Service"
-    APP_VERSION: str = "0.1.0"
+    APP_VERSION: str = "0.2.0"
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
 
