@@ -20,6 +20,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.domain.label_rules import check_labels
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Cluster config — passed between Repository → Factory
@@ -350,11 +352,11 @@ _RESERVED_NAMESPACE_PREFIX = "kube-"
 class NamespaceCreateRequest(BaseModel):
     """Request body for POST /api/v1/clusters/{cluster}/namespaces.
 
-    ``extra="forbid"``: a ``labels`` field (or a typo of one) is a 422, never
-    silently dropped — a caller must not believe a label took effect, and the
-    field name stays free for a future, separately designed labels option.
-    Every check here runs before Kubernetes is called: RBAC cannot restrict a
-    ``create`` by name, so this is the only place the name is bounded.
+    ``extra="forbid"``: any field but ``name`` and ``labels`` (a typo
+    included) is a 422, never silently dropped. Every check here runs before
+    Kubernetes is called: RBAC cannot restrict a ``create`` by name, so this is
+    the only place the name is bounded — and the only place a Reserved label
+    key (CONTEXT.md) is refused.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -365,6 +367,19 @@ class NamespaceCreateRequest(BaseModel):
         pattern=NAMESPACE_NAME_PATTERN,
         description="DNS-1123 label. Not `default`, not starting with `kube-`.",
     )
+    labels: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Namespace labels. Keys under `kubernetes.io` / `k8s.io` (or a "
+            "subdomain) are reserved and refused."
+        ),
+    )
+
+    @field_validator("labels")
+    @classmethod
+    def _valid_labels(cls, labels: dict[str, str]) -> dict[str, str]:
+        check_labels(labels)
+        return labels
 
     @field_validator("name")
     @classmethod

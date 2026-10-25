@@ -181,13 +181,13 @@ def test_creating_a_terminating_name_says_it_is_being_deleted(client, headers):
 @pytest.mark.parametrize(
     "body",
     [
-        {"name": "team-a", "labels": {"pod-security.kubernetes.io/enforce": "privileged"}},
         {"name": "team-a", "lables": {}},  # a typo is refused, not silently dropped
+        {"name": "team-a", "annotations": {"a": "b"}},
         {},
     ],
-    ids=["labels", "unknown-field", "no-name"],
+    ids=["unknown-field", "annotations", "no-name"],
 )
-def test_a_body_with_anything_but_a_name_is_422(client, headers, body):
+def test_a_body_with_anything_but_a_name_and_labels_is_422(client, headers, body):
     assert _create(client, headers, body).status_code == 422
 
 
@@ -213,3 +213,61 @@ def test_a_refused_name_never_reaches_kubernetes(client, headers):
     names = _list(client, headers)
     assert "kube-new" not in names
     assert "Bad_Name" not in names
+
+
+# ── labels on create ──────────────────────────────────────────────────────────
+
+
+def test_creates_a_namespace_with_labels(client, headers):
+    labels = {"team": "a", "acme.io/cost-center": "r-and-d", "empty-ok": ""}
+    resp = _create(client, headers, {"name": "team-a", "labels": labels})
+
+    assert resp.status_code == 201, resp.text
+    read = client.get(f"{_URL}/team-a", headers=headers).json()["data"]["labels"]
+    assert labels.items() <= read.items()
+    assert "team-a" in _list(client, headers, label_selector="team=a")
+
+
+def test_reserved_label_keys_are_422_naming_every_one(client, headers):
+    """CONTEXT.md, Reserved label key: Kubernetes acts on these, so setting one
+    would change the namespace's security posture. All named at once."""
+    labels = {
+        "pod-security.kubernetes.io/enforce": "privileged",
+        "k8s.io/anything": "x",
+        "kubernetes.io/metadata.name": "other",
+        "team": "a",
+    }
+    resp = _create(client, headers, {"name": "team-a", "labels": labels})
+
+    assert resp.status_code == 422
+    body = resp.text
+    for key in ("pod-security.kubernetes.io/enforce", "k8s.io/anything", "kubernetes.io/metadata.name"):
+        assert key in body
+    assert "team-a" not in _list(client, headers)
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [
+        {"": "x"},
+        {"Bad Key": "x"},
+        {"-team": "x"},
+        {"a" * 64: "x"},
+        {"Acme.io/team": "x"},  # prefix must be lowercase
+        {"acme.io/": "x"},
+        {"a/b/c": "x"},
+        {"team": "has space"},
+        {"team": "a" * 64},
+        {"team": "-a"},
+    ],
+    ids=[
+        "empty-key", "space-in-key", "leading-dash", "64-char-name", "uppercase-prefix",
+        "empty-name", "two-slashes", "space-in-value", "64-char-value", "leading-dash-value",
+    ],
+)
+def test_a_malformed_label_is_422_and_nothing_is_created(client, headers, labels):
+    resp = _create(client, headers, {"name": "team-a", "labels": labels})
+
+    assert resp.status_code == 422
+    assert "team-a" not in _list(client, headers)
+

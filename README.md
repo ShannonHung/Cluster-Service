@@ -101,7 +101,7 @@ router (app/api/v1/)
 |--------|------|-------------|
 | `GET` | `/api/v1/clusters/{cluster}/namespaces` | List namespaces; filter by `name` (prefixes), `status` (`Active` / `Terminating`), `label_selector`. Returns every match (paging is internal) |
 | `GET` | `/api/v1/clusters/{cluster}/namespaces/{name}` | Read one namespace; 404 `NAMESPACE_NOT_FOUND` |
-| `POST` | `/api/v1/clusters/{cluster}/namespaces` | Create a namespace from `{"name": "..."}` only; 201. `default` / `kube-*`, non-DNS-1123 names and any other body field (`labels` included) are 422. 409 `NAMESPACE_ALREADY_EXISTS`, with `detail.status` = `Terminating` when the existing one is still being deleted |
+| `POST` | `/api/v1/clusters/{cluster}/namespaces` | Create a namespace from `{"name": "...", "labels": {...}}` (`labels` optional); 201. `default` / `kube-*`, non-DNS-1123 names, malformed labels, label keys under `kubernetes.io` / `k8s.io` (or a subdomain) and any other body field are 422. 409 `NAMESPACE_ALREADY_EXISTS`, with `detail.status` = `Terminating` when the existing one is still being deleted |
 
 There is no delete endpoint: deleting a namespace takes everything in it.
 A created namespace is stamped with **provenance annotations** under

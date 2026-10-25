@@ -62,12 +62,18 @@ class NamespaceService:
         self._clock = clock
 
     def create_namespace(
-        self, cluster: str, name: str, user: str, request_id: str, kube: CoreV1Api
+        self,
+        cluster: str,
+        name: str,
+        user: str,
+        request_id: str,
+        kube: CoreV1Api,
+        labels: dict[str, str] | None = None,
     ) -> NamespaceDetailData:
         """Create a namespace stamped with its provenance annotations.
 
-        The name is validated (DNS-1123 label, not reserved) by the request
-        model before this is called. The annotations say who (``user``, the
+        The name and ``labels`` are validated (DNS-1123 label, not reserved;
+        no Reserved label key) by the request model before this is called. The annotations say who (``user``, the
         authenticated account), when, and in which request — a pointer back to
         the audit trail, not an audit record (ADR 0002).
 
@@ -82,7 +88,9 @@ class NamespaceService:
                 ns = kube.create_namespace(
                     V1Namespace(
                         metadata=V1ObjectMeta(
-                            name=name, annotations=self._provenance("created", user, request_id)
+                            name=name,
+                            labels=labels or None,
+                            annotations=self._provenance("created", user, request_id),
                         )
                     )
                 )

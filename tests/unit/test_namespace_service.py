@@ -239,6 +239,19 @@ def test_creates_a_namespace_stamped_with_its_provenance():
     assert result.annotations == body.metadata.annotations
 
 
+def test_the_caller_s_labels_are_sent_with_the_namespace():
+    kube = MagicMock()
+    kube.create_namespace.side_effect = lambda body: body
+
+    result = _svc().create_namespace(
+        cluster="c1", name="team-a", user="alice", request_id="r", kube=kube,
+        labels={"team": "a"},
+    )
+
+    assert kube.create_namespace.call_args.args[0].metadata.labels == {"team": "a"}
+    assert result.labels == {"team": "a"}
+
+
 def test_created_at_is_utc_whatever_the_clock_zone():
     kube = MagicMock()
     kube.create_namespace.side_effect = lambda body: body
