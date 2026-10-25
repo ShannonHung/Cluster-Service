@@ -24,8 +24,8 @@ from app.services.policy_service import PolicyService
 BatchAction = Literal["cordon", "uncordon"]
 
 _POLICY_ACTION: dict[BatchAction, PolicyAction] = {
-    "cordon": "node.cordon",
-    "uncordon": "node.uncordon",
+    "cordon": PolicyAction.NODE_CORDON,
+    "uncordon": PolicyAction.NODE_UNCORDON,
 }
 
 

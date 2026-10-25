@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from app.core.exceptions import PolicyDeniedException
-from app.domain.access_policy import AccessPolicies, PolicyRule
+from app.domain.access_policy import AccessPolicies, PolicyAction, PolicyParam, PolicyRule
 from app.domain.models import User
 from app.repositories.policy_repository import PolicyRepository
 from app.services.policy_service import PolicyService
@@ -36,13 +36,18 @@ _NO_MASTER = {
 
 
 async def test_enforce_passes_when_allowed():
-    await PolicyService(_Repo()).enforce(_ALICE, "node.drain", {"cluster": "c", "node": "w-1"})
+    await PolicyService(_Repo()).enforce(
+        _ALICE, PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "c", PolicyParam.NODE: "w-1"},
+    )
 
 
 async def test_enforce_raises_403_with_the_rule_in_detail():
     svc = PolicyService(_Repo([_NO_MASTER]))
     with pytest.raises(PolicyDeniedException) as info:
-        await svc.enforce(_ALICE, "node.drain", {"cluster": "c", "node": "cp-master-0"})
+        await svc.enforce(
+            _ALICE, PolicyAction.NODE_DRAIN,
+            {PolicyParam.CLUSTER: "c", PolicyParam.NODE: "cp-master-0"},
+        )
 
     exc = info.value
     assert exc.http_status == 403
@@ -59,7 +64,7 @@ async def test_enforce_raises_403_with_the_rule_in_detail():
 async def test_denied_nodes_loads_the_policy_once_per_batch():
     repo = _Repo([_NO_MASTER])
     denied = await PolicyService(repo).denied_nodes(
-        _ALICE, "node.cordon", cluster="c", nodes=["w-1", "cp-master-0", "cp-master-1"],
+        _ALICE, PolicyAction.NODE_CORDON, cluster="c", nodes=["w-1", "cp-master-0", "cp-master-1"],
     )
     assert repo.calls == 1
     assert set(denied) == {"cp-master-0", "cp-master-1"}

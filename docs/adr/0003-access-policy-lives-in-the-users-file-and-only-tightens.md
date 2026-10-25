@@ -17,7 +17,9 @@ a bad account entry is found at load time, not at that user's first login.
 **Rules name actions, not URLs.** `node.cordon` covers both the single and the
 batch route; a URL pattern would have to list both, and silently stop matching
 when a route is renamed. The action list and each action's parameters are fixed
-in code (`POLICY_ACTIONS`).
+in code (`PolicyAction` / `POLICY_ACTIONS`), and code uses the enum members,
+never the bare strings, so a typo fails at import instead of yielding a rule
+that silently matches nothing.
 
 **User rules only tighten.** Per layer, a matching `deny` refuses, and an
 `allow` list (if the layer has one for the action) must be matched. The request

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from app.domain.access_policy import POLICY_ACTIONS
+from app.domain.access_policy import POLICY_ACTIONS, PolicyAction, PolicyParam
 from app.domain.users_document import UsersDocumentError, parse_users_document
 
 # Deliberately not a bcrypt hash — the input the validator must refuse.
@@ -94,7 +94,7 @@ def test_comments_are_accepted_at_every_level():
         "policies": [{**_RULE, "$comment": "rule"}],
         "users": [{**_ALICE, "$comment": "user"}],
     })
-    assert doc.policies[0].applies_to("node.drain")
+    assert doc.policies[0].applies_to(PolicyAction.NODE_DRAIN)
 
 
 def test_neither_list_nor_object_is_refused():
@@ -135,20 +135,20 @@ def _example_policies(account: str):
     "account, action, params, allowed",
     [
         # global rules bind everyone, admin included
-        ("admin", "node.drain", {"cluster": "prod-east", "node": "worker-1"}, False),
-        ("admin", "node.drain", {"cluster": "dev-1", "node": "cp-master-0"}, False),
-        ("admin", "node.drain", {"cluster": "dev-1", "node": "worker-1"}, True),
-        ("admin", "namespace.label", {"cluster": "dev-1", "namespace": "istio-system"}, False),
+        ("admin", PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "prod-east", PolicyParam.NODE: "worker-1"}, False),
+        ("admin", PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "dev-1", PolicyParam.NODE: "cp-master-0"}, False),
+        ("admin", PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "dev-1", PolicyParam.NODE: "worker-1"}, True),
+        ("admin", PolicyAction.NAMESPACE_LABEL, {PolicyParam.CLUSTER: "dev-1", PolicyParam.NAMESPACE: "istio-system"}, False),
         # operator: allow list for the actions it names
-        ("operator", "node.drain", {"cluster": "stg-2", "node": "worker-1"}, True),
-        ("operator", "node.drain", {"cluster": "qa-1", "node": "worker-1"}, False),
-        ("operator", "node.drain", {"cluster": "prod-east", "node": "worker-1"}, False),
-        ("operator", "node.taint", {"cluster": "dev-1", "node": "worker-1"}, False),
+        ("operator", PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "stg-2", PolicyParam.NODE: "worker-1"}, True),
+        ("operator", PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "qa-1", PolicyParam.NODE: "worker-1"}, False),
+        ("operator", PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "prod-east", PolicyParam.NODE: "worker-1"}, False),
+        ("operator", PolicyAction.NODE_TAINT, {PolicyParam.CLUSTER: "dev-1", PolicyParam.NODE: "worker-1"}, False),
         # an action in no operator rule: only the global rules apply
-        ("operator", "namespace.label", {"cluster": "qa-1", "namespace": "team-a"}, True),
+        ("operator", PolicyAction.NAMESPACE_LABEL, {PolicyParam.CLUSTER: "qa-1", PolicyParam.NAMESPACE: "team-a"}, True),
         # viewer: every write refused
-        ("viewer", "node.cordon", {"cluster": "dev-1", "node": "worker-1"}, False),
-        ("viewer", "namespace.create", {"cluster": "dev-1", "namespace": "team-a"}, False),
+        ("viewer", PolicyAction.NODE_CORDON, {PolicyParam.CLUSTER: "dev-1", PolicyParam.NODE: "worker-1"}, False),
+        ("viewer", PolicyAction.NAMESPACE_CREATE, {PolicyParam.CLUSTER: "dev-1", PolicyParam.NAMESPACE: "team-a"}, False),
     ],
 )
 def test_the_example_behaves_as_its_comments_say(account, action, params, allowed):

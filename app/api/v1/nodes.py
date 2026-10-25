@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, Request
 
 from app.core.dependencies import get_cluster_repo, get_current_user, get_policy_service
 from app.core.exceptions import ErrorCode
+from app.domain.access_policy import PolicyAction, PolicyParam
 from app.domain.kubernetes_models import (
     BatchNodeActionData,
     BatchNodeRequest,
@@ -120,7 +121,11 @@ async def cordon_node(
     svc: NodeService = Depends(_get_node_service),
     policy: PolicyService = Depends(get_policy_service),
 ) -> ApiResponse[NodeActionData]:
-    await policy.enforce(current_user, "node.cordon", {"cluster": cluster, "node": node})
+    await policy.enforce(
+        current_user,
+        PolicyAction.NODE_CORDON,
+        {PolicyParam.CLUSTER: cluster, PolicyParam.NODE: node},
+    )
     data = await call_kube(
         repo,
         cluster,
@@ -158,7 +163,11 @@ async def uncordon_node(
     svc: NodeService = Depends(_get_node_service),
     policy: PolicyService = Depends(get_policy_service),
 ) -> ApiResponse[NodeActionData]:
-    await policy.enforce(current_user, "node.uncordon", {"cluster": cluster, "node": node})
+    await policy.enforce(
+        current_user,
+        PolicyAction.NODE_UNCORDON,
+        {PolicyParam.CLUSTER: cluster, PolicyParam.NODE: node},
+    )
     data = await call_kube(
         repo,
         cluster,
@@ -308,7 +317,11 @@ async def drain_node(
 ) -> ApiResponse[DrainActionData]:
     # Before the dry_run short-circuit, so a request-level dry run also tells
     # the caller the policy would refuse the real drain.
-    await policy.enforce(current_user, "node.drain", {"cluster": cluster, "node": node})
+    await policy.enforce(
+        current_user,
+        PolicyAction.NODE_DRAIN,
+        {PolicyParam.CLUSTER: cluster, PolicyParam.NODE: node},
+    )
     _logger.info(
         "Drain requested | cluster=%s | node=%s | dry_run=%s | reason=%s",
         cluster, node, body.dry_run, body.reason,
@@ -357,7 +370,11 @@ async def patch_node_labels(
     svc: NodeService = Depends(_get_node_service),
     policy: PolicyService = Depends(get_policy_service),
 ) -> ApiResponse[NodeLabelsData]:
-    await policy.enforce(current_user, "node.label", {"cluster": cluster, "node": node})
+    await policy.enforce(
+        current_user,
+        PolicyAction.NODE_LABEL,
+        {PolicyParam.CLUSTER: cluster, PolicyParam.NODE: node},
+    )
     data = await call_kube(
         repo,
         cluster,
@@ -393,7 +410,11 @@ async def patch_node_annotations(
     svc: NodeService = Depends(_get_node_service),
     policy: PolicyService = Depends(get_policy_service),
 ) -> ApiResponse[NodeAnnotationsData]:
-    await policy.enforce(current_user, "node.annotate", {"cluster": cluster, "node": node})
+    await policy.enforce(
+        current_user,
+        PolicyAction.NODE_ANNOTATE,
+        {PolicyParam.CLUSTER: cluster, PolicyParam.NODE: node},
+    )
     data = await call_kube(
         repo,
         cluster,
@@ -431,7 +452,11 @@ async def patch_node_taints(
     svc: NodeService = Depends(_get_node_service),
     policy: PolicyService = Depends(get_policy_service),
 ) -> ApiResponse[NodeTaintData]:
-    await policy.enforce(current_user, "node.taint", {"cluster": cluster, "node": node})
+    await policy.enforce(
+        current_user,
+        PolicyAction.NODE_TAINT,
+        {PolicyParam.CLUSTER: cluster, PolicyParam.NODE: node},
+    )
     data = await call_kube(
         repo,
         cluster,

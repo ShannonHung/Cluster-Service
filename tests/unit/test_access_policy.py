@@ -7,8 +7,6 @@ and how a request is judged against them. Pure domain logic — no file, no app.
 
 from __future__ import annotations
 
-from typing import get_args
-
 import pytest
 from pydantic import ValidationError
 
@@ -16,6 +14,7 @@ from app.domain.access_policy import (
     POLICY_ACTIONS,
     AccessPolicies,
     PolicyAction,
+    PolicyParam,
     PolicyRule,
     evaluate,
 )
@@ -35,8 +34,8 @@ def _policies(global_rules=(), user_rules=(), account="alice") -> AccessPolicies
     )
 
 
-_PROD = {"cluster": "prod-1", "node": "worker-1"}
-_DEV = {"cluster": "dev-1", "node": "worker-1"}
+_PROD = {PolicyParam.CLUSTER: "prod-1", PolicyParam.NODE: "worker-1"}
+_DEV = {PolicyParam.CLUSTER: "dev-1", PolicyParam.NODE: "worker-1"}
 
 
 # ── parsing ───────────────────────────────────────────────────────────────────
@@ -82,20 +81,20 @@ def test_extra_fields_are_refused():
 
 def test_wildcard_expands_to_known_actions():
     rule = _rule(actions=["node.*"], match={"cluster": ".*"})
-    assert rule.applies_to("node.drain")
-    assert rule.applies_to("node.cordon")
-    assert not rule.applies_to("namespace.create")
+    assert rule.applies_to(PolicyAction.NODE_DRAIN)
+    assert rule.applies_to(PolicyAction.NODE_CORDON)
+    assert not rule.applies_to(PolicyAction.NAMESPACE_CREATE)
 
 
 # ── deny ──────────────────────────────────────────────────────────────────────
 
 
 def test_no_rules_allows():
-    assert evaluate(_policies(), "node.drain", _PROD).allowed
+    assert evaluate(_policies(), PolicyAction.NODE_DRAIN, _PROD).allowed
 
 
 def test_global_deny_blocks_matching_request():
-    decision = evaluate(_policies([_rule(id="no-prod")]), "node.drain", _PROD)
+    decision = evaluate(_policies([_rule(id="no-prod")]), PolicyAction.NODE_DRAIN, _PROD)
     assert not decision.allowed
     assert decision.rule_id == "no-prod"
     assert decision.layer == "global"
@@ -103,36 +102,36 @@ def test_global_deny_blocks_matching_request():
 
 
 def test_deny_does_not_block_non_matching_request():
-    assert evaluate(_policies([_rule()]), "node.drain", _DEV).allowed
+    assert evaluate(_policies([_rule()]), PolicyAction.NODE_DRAIN, _DEV).allowed
 
 
 def test_deny_does_not_apply_to_other_actions():
-    assert evaluate(_policies([_rule()]), "node.cordon", _PROD).allowed
+    assert evaluate(_policies([_rule()]), PolicyAction.NODE_CORDON, _PROD).allowed
 
 
 def test_regex_is_a_full_match_not_a_search():
     """`prod` must not catch `nonprod-1`."""
     rule = _rule(match={"cluster": "prod"})
-    assert evaluate(_policies([rule]), "node.drain", {"cluster": "nonprod", "node": "n"}).allowed
-    assert not evaluate(_policies([rule]), "node.drain", {"cluster": "prod", "node": "n"}).allowed
+    assert evaluate(_policies([rule]), PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "nonprod", PolicyParam.NODE: "n"}).allowed
+    assert not evaluate(_policies([rule]), PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "prod", PolicyParam.NODE: "n"}).allowed
 
 
 def test_keys_within_one_rule_are_anded():
     rule = _rule(match={"cluster": "prod-.*", "node": ".*-master-\\d+"})
     p = _policies([rule])
-    assert evaluate(p, "node.drain", {"cluster": "prod-1", "node": "worker-1"}).allowed
-    assert evaluate(p, "node.drain", {"cluster": "dev-1", "node": "cp-master-0"}).allowed
-    assert not evaluate(p, "node.drain", {"cluster": "prod-1", "node": "cp-master-0"}).allowed
+    assert evaluate(p, PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "prod-1", PolicyParam.NODE: "worker-1"}).allowed
+    assert evaluate(p, PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "dev-1", PolicyParam.NODE: "cp-master-0"}).allowed
+    assert not evaluate(p, PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "prod-1", PolicyParam.NODE: "cp-master-0"}).allowed
 
 
 def test_deny_with_absent_param_does_not_match():
     rule = _rule(match={"node": "master-.*"})
-    assert evaluate(_policies([rule]), "node.drain", {"cluster": "prod-1"}).allowed
+    assert evaluate(_policies([rule]), PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "prod-1"}).allowed
 
 
 def test_description_is_part_of_the_reason():
     rule = _rule(description="prod is managed by the SRE pipeline")
-    decision = evaluate(_policies([rule]), "node.drain", _PROD)
+    decision = evaluate(_policies([rule]), PolicyAction.NODE_DRAIN, _PROD)
     assert "prod is managed by the SRE pipeline" in decision.reason
 
 
@@ -142,9 +141,9 @@ def test_description_is_part_of_the_reason():
 def test_allow_list_admits_only_matching_requests():
     allow = _rule(id="dev-only", effect="allow", match={"cluster": "dev-.*"})
     p = _policies(user_rules=[allow])
-    assert evaluate(p, "node.drain", _DEV).allowed
+    assert evaluate(p, PolicyAction.NODE_DRAIN, _DEV).allowed
 
-    decision = evaluate(p, "node.drain", _PROD)
+    decision = evaluate(p, PolicyAction.NODE_DRAIN, _PROD)
     assert not decision.allowed
     assert decision.layer == "user"
     assert decision.rule_id is None
@@ -153,7 +152,7 @@ def test_allow_list_admits_only_matching_requests():
 
 def test_allow_list_only_restricts_the_actions_it_names():
     allow = _rule(effect="allow", actions=["node.drain"], match={"cluster": "dev-.*"})
-    assert evaluate(_policies(user_rules=[allow]), "node.cordon", _PROD).allowed
+    assert evaluate(_policies(user_rules=[allow]), PolicyAction.NODE_CORDON, _PROD).allowed
 
 
 def test_any_allow_rule_in_a_layer_is_enough():
@@ -161,12 +160,12 @@ def test_any_allow_rule_in_a_layer_is_enough():
         _rule(id="a", effect="allow", match={"cluster": "dev-.*"}),
         _rule(id="b", effect="allow", match={"cluster": "stg-.*"}),
     ])
-    assert evaluate(p, "node.drain", {"cluster": "stg-2", "node": "n"}).allowed
+    assert evaluate(p, PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "stg-2", PolicyParam.NODE: "n"}).allowed
 
 
 def test_allow_with_absent_param_does_not_admit():
     allow = _rule(effect="allow", match={"node": "worker-.*"})
-    assert not evaluate(_policies([allow]), "node.drain", {"cluster": "dev-1"}).allowed
+    assert not evaluate(_policies([allow]), PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "dev-1"}).allowed
 
 
 def test_deny_wins_over_allow_in_the_same_layer():
@@ -174,7 +173,7 @@ def test_deny_wins_over_allow_in_the_same_layer():
         _rule(id="all", effect="allow", match={"cluster": ".*"}),
         _rule(id="no-master", effect="deny", match={"node": ".*-master-\\d+"}),
     ])
-    decision = evaluate(p, "node.drain", {"cluster": "dev-1", "node": "cp-master-0"})
+    decision = evaluate(p, PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "dev-1", PolicyParam.NODE: "cp-master-0"})
     assert not decision.allowed
     assert decision.rule_id == "no-master"
 
@@ -188,7 +187,7 @@ def test_user_allow_cannot_override_global_deny():
         global_rules=[_rule(id="no-prod")],
         user_rules=[_rule(id="me-prod", effect="allow", match={"cluster": "prod-.*"})],
     )
-    decision = evaluate(p, "node.drain", _PROD)
+    decision = evaluate(p, PolicyAction.NODE_DRAIN, _PROD)
     assert not decision.allowed
     assert decision.rule_id == "no-prod"
 
@@ -198,15 +197,26 @@ def test_both_layers_allow_lists_must_be_satisfied():
         global_rules=[_rule(id="g", effect="allow", match={"cluster": "(dev|stg)-.*"})],
         user_rules=[_rule(id="u", effect="allow", match={"cluster": "dev-.*"})],
     )
-    assert evaluate(p, "node.drain", _DEV).allowed
-    assert not evaluate(p, "node.drain", {"cluster": "stg-1", "node": "n"}).allowed
-    assert not evaluate(p, "node.drain", _PROD).allowed
+    assert evaluate(p, PolicyAction.NODE_DRAIN, _DEV).allowed
+    assert not evaluate(p, PolicyAction.NODE_DRAIN, {PolicyParam.CLUSTER: "stg-1", PolicyParam.NODE: "n"}).allowed
+    assert not evaluate(p, PolicyAction.NODE_DRAIN, _PROD).allowed
 
 
-def test_unknown_action_at_evaluation_is_a_programming_error():
-    with pytest.raises(KeyError):
+def test_an_unknown_action_string_is_refused_not_allowed():
+    """No rule could match an unknown action, so letting it through would fail
+    open; evaluate converts the action and raises instead."""
+    with pytest.raises(ValueError, match="node.explode"):
         evaluate(_policies(), "node.explode", _PROD)
 
 
-def test_the_action_type_and_the_action_table_agree():
-    assert set(get_args(PolicyAction)) == set(POLICY_ACTIONS)
+def test_every_action_declares_its_parameters():
+    assert set(POLICY_ACTIONS) == set(PolicyAction)
+    assert set().union(*POLICY_ACTIONS.values()) == set(PolicyParam)
+
+
+def test_error_messages_name_actions_as_plain_strings():
+    """An enum repr must not leak into what a user reads."""
+    with pytest.raises(ValidationError) as info:
+        _rule(actions=["node.drian"])
+    assert "PolicyAction" not in str(info.value)
+    assert "'node.cordon'" in str(info.value)

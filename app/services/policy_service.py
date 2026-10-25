@@ -14,11 +14,17 @@ in ``results`` while the rest of the batch proceeds.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
 from typing import Optional
 
 from app.core.exceptions import PolicyDeniedException
-from app.domain.access_policy import AccessPolicies, PolicyAction, PolicyDecision, evaluate
+from app.domain.access_policy import (
+    AccessPolicies,
+    PolicyAction,
+    PolicyDecision,
+    PolicyParam,
+    PolicyParams,
+    evaluate,
+)
 from app.domain.models import User
 from app.repositories.policy_repository import PolicyRepository
 
@@ -34,7 +40,7 @@ class PolicyService:
         self,
         user: User,
         action: PolicyAction,
-        params: Mapping[str, Optional[str]],
+        params: PolicyParams,
     ) -> None:
         """Raise ``PolicyDeniedException`` unless the policy permits the request."""
         policies = await self._repo.get_policies(user.account)
@@ -46,7 +52,7 @@ class PolicyService:
                     "action": action,
                     "layer": decision.layer,
                     "rule_id": decision.rule_id,
-                    "params": dict(params),
+                    "params": _plain(params),
                 },
             )
 
@@ -66,7 +72,7 @@ class PolicyService:
         policies = await self._repo.get_policies(user.account)
         denied: dict[str, str] = {}
         for node in nodes:
-            decision = self._evaluate_and_log(policies, action, {"cluster": cluster, "node": node})
+            decision = self._evaluate_and_log(policies, action, {PolicyParam.CLUSTER: cluster, PolicyParam.NODE: node})
             if not decision.allowed:
                 denied[node] = decision.reason
         return denied
@@ -75,13 +81,18 @@ class PolicyService:
     def _evaluate_and_log(
         policies: AccessPolicies,
         action: PolicyAction,
-        params: Mapping[str, Optional[str]],
+        params: PolicyParams,
     ) -> PolicyDecision:
         decision = evaluate(policies, action, params)
         if not decision.allowed:
             _logger.warning(
                 "Policy denied | user=%s | action=%s | params=%s | layer=%s | rule=%s",
-                policies.account, action, dict(params), decision.layer, decision.rule_id,
+                policies.account, action, _plain(params), decision.layer, decision.rule_id,
             )
         return decision
 
+
+def _plain(params: PolicyParams) -> dict[str, Optional[str]]:
+    """Plain string keys for the response and the log — an enum key's repr
+    would leak ``<PolicyParam.CLUSTER: 'cluster'>`` into both."""
+    return {str(k): v for k, v in params.items()}

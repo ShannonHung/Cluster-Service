@@ -29,35 +29,61 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
+from enum import StrEnum
 from typing import Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
-PolicyAction = Literal[
-    "node.cordon",
-    "node.uncordon",
-    "node.drain",
-    "node.label",
-    "node.annotate",
-    "node.taint",
-    "namespace.create",
-    "namespace.label",
-]
+class PolicyAction(StrEnum):
+    """Every policed action — a kind of write, ``<resource>.<verb>``.
 
-# Every policed action and the parameters a rule may match on. Read actions are
-# deliberately absent: the policy gates writes only. Keys mirror PolicyAction.
-POLICY_ACTIONS: dict[PolicyAction, frozenset[str]] = {
-    "node.cordon":      frozenset({"cluster", "node"}),
-    "node.uncordon":    frozenset({"cluster", "node"}),
-    "node.drain":       frozenset({"cluster", "node"}),
-    "node.label":       frozenset({"cluster", "node"}),
-    "node.annotate":    frozenset({"cluster", "node"}),
-    "node.taint":       frozenset({"cluster", "node"}),
-    "namespace.create": frozenset({"cluster", "namespace"}),
-    "namespace.label":  frozenset({"cluster", "namespace"}),
+    The values are what a rule's ``actions`` names in USERS_JSON_PATH. Read
+    actions are deliberately absent: the policy gates writes only.
+    """
+
+    NODE_CORDON = "node.cordon"
+    NODE_UNCORDON = "node.uncordon"
+    NODE_DRAIN = "node.drain"
+    NODE_LABEL = "node.label"
+    NODE_ANNOTATE = "node.annotate"
+    NODE_TAINT = "node.taint"
+    NAMESPACE_CREATE = "namespace.create"
+    NAMESPACE_LABEL = "namespace.label"
+
+
+class PolicyParam(StrEnum):
+    """A request parameter a rule's ``match`` can test."""
+
+    CLUSTER = "cluster"
+    NODE = "node"
+    NAMESPACE = "namespace"
+
+
+_ON_NODE = frozenset({PolicyParam.CLUSTER, PolicyParam.NODE})
+_ON_NAMESPACE = frozenset({PolicyParam.CLUSTER, PolicyParam.NAMESPACE})
+
+# The parameters each action carries, so a rule can be checked for a match key
+# its actions do not have.
+POLICY_ACTIONS: dict[PolicyAction, frozenset[PolicyParam]] = {
+    PolicyAction.NODE_CORDON: _ON_NODE,
+    PolicyAction.NODE_UNCORDON: _ON_NODE,
+    PolicyAction.NODE_DRAIN: _ON_NODE,
+    PolicyAction.NODE_LABEL: _ON_NODE,
+    PolicyAction.NODE_ANNOTATE: _ON_NODE,
+    PolicyAction.NODE_TAINT: _ON_NODE,
+    PolicyAction.NAMESPACE_CREATE: _ON_NAMESPACE,
+    PolicyAction.NAMESPACE_LABEL: _ON_NAMESPACE,
 }
 
+# What a route hands the policy: the values the request will act on.
+PolicyParams = Mapping[PolicyParam, Optional[str]]
+
 Layer = Literal["global", "user"]
+
+
+def _names(values) -> list[str]:
+    """Sorted plain strings — an enum's repr would leak into error messages."""
+    return sorted(str(v) for v in values)
 
 
 class PolicyRule(BaseModel):
@@ -78,33 +104,33 @@ class PolicyRule(BaseModel):
         description="Parameter name → regex, every entry must fullmatch.",
     )
 
-    _targets: frozenset[str] = PrivateAttr(default_factory=frozenset)
-    _patterns: dict[str, re.Pattern[str]] = PrivateAttr(default_factory=dict)
+    _targets: frozenset[PolicyAction] = PrivateAttr(default_factory=frozenset)
+    _patterns: dict[PolicyParam, re.Pattern[str]] = PrivateAttr(default_factory=dict)
 
     @model_validator(mode="after")
     def _resolve(self) -> "PolicyRule":
-        targets: set[str] = set()
+        targets: set[PolicyAction] = set()
         for pattern in self.actions:
-            hits = {a for a in POLICY_ACTIONS if fnmatchcase(a, pattern)}
+            hits = {a for a in PolicyAction if fnmatchcase(a, pattern)}
             if not hits:
                 raise ValueError(
                     f"rule '{self.id}': action '{pattern}' matches no policed "
-                    f"action (known: {sorted(POLICY_ACTIONS)})"
+                    f"action (known: {_names(PolicyAction)})"
                 )
             targets |= hits
 
-        params = set().union(*(POLICY_ACTIONS[a] for a in targets))
+        params: set[PolicyParam] = set().union(*(POLICY_ACTIONS[a] for a in targets))
         for key in self.match:
             if key not in params:
                 raise ValueError(
                     f"rule '{self.id}': match key '{key}' is not a parameter of "
-                    f"{sorted(targets)} (known: {sorted(params)})"
+                    f"{_names(targets)} (known: {_names(params)})"
                 )
 
-        patterns: dict[str, re.Pattern[str]] = {}
+        patterns: dict[PolicyParam, re.Pattern[str]] = {}
         for key, regex in self.match.items():
             try:
-                patterns[key] = re.compile(regex)
+                patterns[PolicyParam(key)] = re.compile(regex)
             except re.error as exc:
                 raise ValueError(
                     f"rule '{self.id}': invalid regex for '{key}': {regex!r} ({exc})"
@@ -114,10 +140,10 @@ class PolicyRule(BaseModel):
         self._patterns = patterns
         return self
 
-    def applies_to(self, action: str) -> bool:
+    def applies_to(self, action: PolicyAction) -> bool:
         return action in self._targets
 
-    def matches(self, params: Mapping[str, Optional[str]]) -> bool:
+    def matches(self, params: PolicyParams) -> bool:
         for key, pattern in self._patterns.items():
             value = params.get(key)
             if value is None or pattern.fullmatch(value) is None:
@@ -146,7 +172,7 @@ class PolicyDecision:
 _ALLOWED = PolicyDecision(allowed=True)
 
 
-def _describe(params: Mapping[str, Optional[str]]) -> str:
+def _describe(params: PolicyParams) -> str:
     return ", ".join(f"{k}='{v}'" for k, v in params.items() if v is not None)
 
 
@@ -155,7 +181,7 @@ def _evaluate_layer(
     layer: Layer,
     account: str,
     action: PolicyAction,
-    params: Mapping[str, Optional[str]],
+    params: PolicyParams,
 ) -> PolicyDecision:
     applicable = [r for r in rules if r.applies_to(action)]
     where = "global policy" if layer == "global" else f"policy of user '{account}'"
@@ -181,13 +207,15 @@ def _evaluate_layer(
 def evaluate(
     policies: AccessPolicies,
     action: PolicyAction,
-    params: Mapping[str, Optional[str]],
+    params: PolicyParams,
 ) -> PolicyDecision:
-    """Judge one request. Raises ``KeyError`` for an action not in POLICY_ACTIONS
-    — that is a routing bug, never a caller error."""
-    if action not in POLICY_ACTIONS:
-        raise KeyError(f"'{action}' is not a policed action")
+    """Judge one request.
 
+    ``action`` is converted, not trusted: a plain string that names no
+    policed action raises ``ValueError`` instead of matching no rule — which
+    would silently allow it.
+    """
+    action = PolicyAction(action)
     for rules, layer in (
         (policies.global_rules, "global"),
         (policies.user_rules, "user"),

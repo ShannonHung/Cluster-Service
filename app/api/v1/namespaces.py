@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, Path, Query, Request
 
 from app.core.config import get_settings
 from app.core.dependencies import get_cluster_repo, get_current_user, get_policy_service
+from app.domain.access_policy import PolicyAction, PolicyParam
 from app.domain.kubernetes_models import (
     NAMESPACE_NAME_PATTERN,
     NamespaceCreateRequest,
@@ -156,7 +157,9 @@ async def create_namespace(
     policy: PolicyService = Depends(get_policy_service),
 ) -> ApiResponse[NamespaceDetailData]:
     await policy.enforce(
-        current_user, "namespace.create", {"cluster": cluster, "namespace": body.name},
+        current_user,
+        PolicyAction.NAMESPACE_CREATE,
+        {PolicyParam.CLUSTER: cluster, PolicyParam.NAMESPACE: body.name},
     )
     data = await call_kube(
         repo,
@@ -199,7 +202,9 @@ async def patch_namespace_labels(
     policy: PolicyService = Depends(get_policy_service),
 ) -> ApiResponse[NamespaceLabelsData]:
     await policy.enforce(
-        current_user, "namespace.label", {"cluster": cluster, "namespace": name},
+        current_user,
+        PolicyAction.NAMESPACE_LABEL,
+        {PolicyParam.CLUSTER: cluster, PolicyParam.NAMESPACE: name},
     )
     data = await call_kube(
         repo,
