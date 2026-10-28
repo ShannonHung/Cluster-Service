@@ -246,6 +246,17 @@ def test_reserved_label_keys_are_422_naming_every_one(client, headers):
     assert "team-a" not in _list(client, headers)
 
 
+def test_a_label_under_the_provenance_prefix_is_422_and_nothing_is_created(client, headers):
+    """ADR 0002: the prefix belongs to the service, labels included."""
+    key = "cluster-service.test/created-by"
+
+    resp = _create(client, headers, {"name": "team-a", "labels": {key: "mallory"}})
+
+    assert resp.status_code == 422
+    assert key in resp.text
+    assert "team-a" not in _list(client, headers)
+
+
 @pytest.mark.parametrize(
     "labels",
     [
@@ -349,6 +360,20 @@ def test_a_reserved_namespace_cannot_be_relabelled(client, headers, name):
 
     assert resp.status_code == 422
     assert _read(client, headers, name)["labels"] == before
+
+
+@pytest.mark.parametrize("field", ["set", "remove"])
+def test_labels_under_the_provenance_prefix_cannot_be_set_or_removed(client, headers, field):
+    _create(client, headers, {"name": "team-a"})
+    key = "cluster-service.test/created-by"
+    body = {"set": {key: "x"}} if field == "set" else {"remove": [key]}
+    before = _read(client, headers, "team-a")
+
+    resp = _patch(client, headers, "team-a", body)
+
+    assert resp.status_code == 422
+    assert key in resp.text
+    assert _read(client, headers, "team-a") == before
 
 
 @pytest.mark.parametrize("field", ["set", "remove"])

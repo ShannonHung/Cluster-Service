@@ -28,6 +28,13 @@ def is_reserved_domain(domain: str) -> bool:
     return any(domain == d or domain.endswith("." + d) for d in _RESERVED_DOMAINS)
 
 
+def is_under_domain(key: str, domain: str) -> bool:
+    """True when ``key``'s prefix (before the `/`) is ``domain`` or a subdomain
+    of it. A key without a prefix is under no domain."""
+    prefix, slash, _ = key.rpartition("/")
+    return bool(slash) and (prefix == domain or prefix.endswith("." + domain))
+
+
 # A label name (the part after the optional `prefix/`) and a non-empty label
 # value share one shape: at most 63 characters, alphanumeric at both ends,
 # `-`, `_` and `.` in between.

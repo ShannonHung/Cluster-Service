@@ -253,6 +253,20 @@ def test_the_caller_s_labels_are_sent_with_the_namespace():
     assert result.labels == {"team": "a"}
 
 
+def test_a_label_under_the_provenance_prefix_is_refused_on_create():
+    """ADR 0002: the prefix belongs to the service — a caller cannot write under
+    it with a label either. Refused before Kubernetes is called."""
+    kube = MagicMock()
+
+    with pytest.raises(ValidationException, match="cs.acme.io/created-by"):
+        _svc().create_namespace(
+            cluster="c1", name="team-a", labels={"cs.acme.io/created-by": "mallory"},
+            caller=Caller(account="alice", request_id="r"), kube=kube,
+        )
+
+    kube.create_namespace.assert_not_called()
+
+
 def test_created_at_is_utc_whatever_the_clock_zone():
     kube = MagicMock()
     kube.create_namespace.side_effect = lambda body: body
@@ -395,6 +409,61 @@ def test_an_update_without_a_request_id_clears_the_previous_one():
 
     annotations = kube.patch_namespace.call_args.args[1]["metadata"]["annotations"]
     assert annotations["cs.acme.io/last-request-id"] is None
+
+
+def test_a_label_under_the_provenance_prefix_is_refused_on_update_set():
+    kube = MagicMock()
+
+    with pytest.raises(ValidationException, match="cs.acme.io/last-modified-by"):
+        _update(kube, set_labels={"team": "b", "cs.acme.io/last-modified-by": "mallory"})
+
+    kube.patch_namespace.assert_not_called()
+
+
+def test_a_label_under_the_provenance_prefix_is_refused_on_update_remove():
+    """Removing a stamp would erase the pointer to the audit trail just as
+    setting one would forge it."""
+    kube = MagicMock()
+
+    with pytest.raises(ValidationException, match="cs.acme.io/created-by"):
+        _update(kube, remove_labels=["cs.acme.io/created-by"])
+
+    kube.patch_namespace.assert_not_called()
+
+
+def test_a_subdomain_of_the_provenance_prefix_is_refused_too():
+    kube = MagicMock()
+
+    with pytest.raises(ValidationException, match="a.cs.acme.io/x"):
+        _update(kube, set_labels={"a.cs.acme.io/x": "1"})
+
+    kube.patch_namespace.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "key", ["notcs.acme.io/x", "cs.acme.io.evil/x", "acme.io/x", "cs.acme.io", "team"]
+)
+def test_a_key_that_only_resembles_the_provenance_prefix_is_allowed(key):
+    kube = MagicMock()
+    kube.patch_namespace.return_value = _ns("team-a")
+
+    _update(kube, set_labels={key: "1"})
+
+    kube.patch_namespace.assert_called_once()
+
+
+def test_every_key_under_the_provenance_prefix_is_named_at_once():
+    kube = MagicMock()
+
+    with pytest.raises(ValidationException) as info:
+        _update(
+            kube,
+            set_labels={"cs.acme.io/a": "1", "team": "x"},
+            remove_labels=["cs.acme.io/b"],
+        )
+
+    assert "cs.acme.io/a" in info.value.message and "cs.acme.io/b" in info.value.message
+    assert "team" not in info.value.message
 
 
 @pytest.mark.parametrize("name", ["default", "kube-system", "kube-public"])

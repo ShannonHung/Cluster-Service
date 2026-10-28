@@ -10,7 +10,7 @@ namespace: deletion takes everything inside it, irreversibly.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from typing import get_args
 
@@ -30,6 +30,7 @@ from app.domain.kubernetes_models import (
     NamespaceSummary,
     is_reserved_namespace_name,
 )
+from app.domain.label_rules import is_under_domain
 from app.domain.models import Caller
 from app.services.kube_errors import translate_kube_errors
 from app.services.kube_patch import key_merge_patch
@@ -87,6 +88,7 @@ class NamespaceService:
                 message and ``detail["status"]`` tell apart.
             KubeApiException: On any other Kubernetes API failure.
         """
+        self._refuse_provenance_keys(labels, "label")
         with translate_kube_errors(cluster, f"create namespace '{name}' in cluster '{cluster}'"):
             try:
                 ns = kube.create_namespace(
@@ -138,6 +140,7 @@ class NamespaceService:
                 f"Namespace '{name}' is reserved for Kubernetes; its labels cannot be "
                 "changed through this service.",
             )
+        self._refuse_provenance_keys([*set_labels, *remove_labels], "label")
         body = {
             "metadata": {
                 "labels": key_merge_patch(set_labels, remove_labels),
@@ -223,6 +226,16 @@ class NamespaceService:
 
         _logger.info("Read namespace | cluster=%s | name=%s", cluster, name)
         return _to_detail(cluster, ns)
+
+    def _refuse_provenance_keys(self, keys: Iterable[str], kind: str) -> None:
+        """The provenance prefix belongs to the service (ADR 0002): raise naming
+        every ``keys`` entry under it, so one refusal reveals the whole set."""
+        under = [k for k in keys if is_under_domain(k, self._prefix)]
+        if under:
+            raise ValidationException(
+                f"{kind} keys {under} are under '{self._prefix}', which belongs to "
+                "this service and cannot be written by a caller.",
+            )
 
     def _provenance(self, verb: str, caller: Caller) -> dict[str, str | None]:
         """``<prefix>/<verb>-by``, ``<prefix>/<verb>-at`` and
