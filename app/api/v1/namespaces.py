@@ -135,9 +135,12 @@ async def get_namespace(
     summary="Create a namespace",
     description=(
         "Creates a namespace from ``name`` (DNS-1123 label; not ``default``, "
-        "not ``kube-*``) and optional ``labels``. A label key under "
+        "not ``kube-*``), optional ``labels`` and optional ``annotations`` "
+        "(free-form values). A label key under "
         "``kubernetes.io`` / ``k8s.io`` (or a subdomain) is reserved: 422 "
-        "naming every such key. Any other field is 422. The service stamps its provenance annotations "
+        "naming every such key. A label or annotation key under "
+        "``<PROVENANCE_ANNOTATION_PREFIX>`` (or a subdomain) is the service's own: "
+        "422 naming every such key. Any other field is 422. The service stamps its provenance annotations "
         "(``<PROVENANCE_ANNOTATION_PREFIX>/created-by``, ``/created-at``, "
         "``/last-request-id``): a pointer to the audit trail, not an audit "
         "record (ADR 0002). "
@@ -168,6 +171,7 @@ async def create_namespace(
             cluster=cluster,
             name=body.name,
             labels=body.labels,
+            annotations=body.annotations,
             caller=_caller(request, current_user),
             kube=kube,
         ),

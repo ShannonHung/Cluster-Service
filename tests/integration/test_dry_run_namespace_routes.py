@@ -182,12 +182,12 @@ def test_creating_a_terminating_name_says_it_is_being_deleted(client, headers):
     "body",
     [
         {"name": "team-a", "lables": {}},  # a typo is refused, not silently dropped
-        {"name": "team-a", "annotations": {"a": "b"}},
+        {"name": "team-a", "annotation": {"a": "b"}},  # singular: a typo, not the field
         {},
     ],
-    ids=["unknown-field", "annotations", "no-name"],
+    ids=["unknown-field", "annotations-typo", "no-name"],
 )
-def test_a_body_with_anything_but_a_name_and_labels_is_422(client, headers, body):
+def test_a_body_with_anything_but_a_name_labels_and_annotations_is_422(client, headers, body):
     assert _create(client, headers, body).status_code == 422
 
 
@@ -243,6 +243,32 @@ def test_reserved_label_keys_are_422_naming_every_one(client, headers):
     body = resp.text
     for key in ("pod-security.kubernetes.io/enforce", "k8s.io/anything", "kubernetes.io/metadata.name"):
         assert key in body
+    assert "team-a" not in _list(client, headers)
+
+
+def test_annotations_given_at_creation_are_kept_beside_the_provenance_stamps(client, headers):
+    resp = _create(client, headers, {"name": "team-a", "annotations": {"owner": "alice"}})
+
+    assert resp.status_code == 201, resp.text
+    annotations = _read(client, headers, "team-a")["annotations"]
+    assert annotations["owner"] == "alice"
+    assert annotations["cluster-service.test/created-by"] == "test_admin"
+
+
+def test_an_annotation_under_the_provenance_prefix_is_422_and_nothing_is_created(client, headers):
+    key = "cluster-service.test/created-by"
+
+    resp = _create(client, headers, {"name": "team-a", "annotations": {key: "mallory"}})
+
+    assert resp.status_code == 422
+    assert key in resp.text
+    assert "team-a" not in _list(client, headers)
+
+
+def test_a_malformed_annotation_key_is_422_and_nothing_is_created(client, headers):
+    resp = _create(client, headers, {"name": "team-a", "annotations": {"Bad Key": "x"}})
+
+    assert resp.status_code == 422
     assert "team-a" not in _list(client, headers)
 
 

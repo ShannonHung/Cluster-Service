@@ -81,6 +81,15 @@ def check_label_keys(keys: list[str]) -> None:
         raise ValueError("; ".join(problems))
 
 
+def check_annotation_keys(keys: list[str]) -> None:
+    """Raise ValueError naming every malformed annotation key at once. An
+    annotation key has the shape of a label key; unlike labels, no domain is
+    reserved here and the values are free-form, so they are not checked."""
+    malformed = [k for k in keys if _malformed_key(k)]
+    if malformed:
+        raise ValueError(f"malformed annotation keys {malformed}")
+
+
 def check_labels(labels: dict[str, str]) -> None:
     """`check_label_keys`, plus malformed values — all named at once."""
     problems = []

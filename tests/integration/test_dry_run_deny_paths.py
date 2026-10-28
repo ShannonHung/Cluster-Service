@@ -245,7 +245,8 @@ def test_missing_command_api_is_403(dry, method, path):
         ("post", f"{_CLUSTER}/nodes:uncordon", {}),
         ("post", "/api/v1/deploy?action=a", {"variables": "not-a-list"}),
         ("post", "/api/v1/command/execution", {"command_name": "dry_run_ansible_ping"}),
-        ("post", f"{_CLUSTER}/namespaces", {"name": "x", "annotations": {"a": "b"}}),
+        ("post", f"{_CLUSTER}/namespaces", {"name": "x", "annotation": {"a": "b"}}),
+        ("post", f"{_CLUSTER}/namespaces", {"name": "x", "annotations": {"Bad Key": "b"}}),
         (
             "post",
             f"{_CLUSTER}/namespaces",

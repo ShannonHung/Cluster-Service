@@ -20,7 +20,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.domain.label_rules import check_label_keys, check_labels
+from app.domain.label_rules import check_annotation_keys, check_label_keys, check_labels
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -357,11 +357,13 @@ def is_reserved_namespace_name(name: str) -> bool:
 class NamespaceCreateRequest(BaseModel):
     """Request body for POST /api/v1/clusters/{cluster}/namespaces.
 
-    ``extra="forbid"``: any field but ``name`` and ``labels`` (a typo
+    ``extra="forbid"``: any field but ``name``, ``labels`` and ``annotations`` (a typo
     included) is a 422, never silently dropped. Every check here runs before
     Kubernetes is called: RBAC cannot restrict a ``create`` by name, so this is
     the only place the name is bounded — and the only place a Reserved label
-    key (CONTEXT.md) is refused.
+    key (CONTEXT.md) is refused. Annotation keys are shape-checked here; a label
+    or annotation key under the provenance prefix is refused in
+    ``NamespaceService``, since the prefix is a setting this model cannot see.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -380,11 +382,25 @@ class NamespaceCreateRequest(BaseModel):
         ),
     )
 
+    annotations: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Namespace annotations, free-form values. Keys under the service's "
+            "provenance prefix are refused: they are the service's own."
+        ),
+    )
+
     @field_validator("labels")
     @classmethod
     def _valid_labels(cls, labels: dict[str, str]) -> dict[str, str]:
         check_labels(labels)
         return labels
+
+    @field_validator("annotations")
+    @classmethod
+    def _valid_annotations(cls, annotations: dict[str, str]) -> dict[str, str]:
+        check_annotation_keys(list(annotations))
+        return annotations
 
     @field_validator("name")
     @classmethod

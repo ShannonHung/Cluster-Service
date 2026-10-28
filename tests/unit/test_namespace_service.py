@@ -254,6 +254,47 @@ def test_the_caller_s_labels_are_sent_with_the_namespace():
     assert result.labels == {"team": "a"}
 
 
+def test_the_caller_s_annotations_are_sent_beside_the_provenance_stamps():
+    kube = MagicMock()
+    kube.create_namespace.side_effect = lambda body: body
+
+    result = _svc().create_namespace(
+        cluster="c1", name="team-a", labels={}, annotations={"owner": "alice"},
+        caller=Caller(account="bob", request_id="req-1"), kube=kube,
+    )
+
+    sent = kube.create_namespace.call_args.args[0].metadata.annotations
+    assert sent == {
+        "owner": "alice",
+        "cs.acme.io/created-by": "bob",
+        "cs.acme.io/created-at": "2026-10-25T08:30:00Z",
+        "cs.acme.io/last-request-id": "req-1",
+    }
+    assert result.annotations == sent
+
+
+def test_an_annotation_under_the_provenance_prefix_is_refused_on_create():
+    """A caller cannot forge or pre-empt the service's stamps. Refused before
+    Kubernetes is called, every offender named."""
+    kube = MagicMock()
+
+    with pytest.raises(ValidationException) as info:
+        _svc().create_namespace(
+            cluster="c1", name="team-a", labels={},
+            annotations={
+                "owner": "alice",
+                "cs.acme.io/created-by": "mallory",
+                "x.cs.acme.io/y": "1",
+            },
+            caller=Caller(account="alice", request_id="r"), kube=kube,
+        )
+
+    assert "cs.acme.io/created-by" in info.value.message
+    assert "x.cs.acme.io/y" in info.value.message
+    assert "annotation" in info.value.message
+    kube.create_namespace.assert_not_called()
+
+
 def test_a_label_under_the_provenance_prefix_is_refused_on_create():
     """ADR 0002: the prefix belongs to the service — a caller cannot write under
     it with a label either. Refused before Kubernetes is called."""

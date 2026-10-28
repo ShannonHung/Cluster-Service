@@ -73,25 +73,27 @@ class NamespaceService:
         labels: dict[str, str],
         caller: Caller,
         kube: CoreV1Api,
+        annotations: dict[str, str] | None = None,
     ) -> NamespaceDetailData:
         """Create a namespace stamped with its provenance annotations.
 
         The name and ``labels`` are validated (DNS-1123 label, not reserved;
         no Reserved label key) by the request model before this is called; a
-        label key under the provenance prefix is refused here, as the prefix is
-        a setting the model cannot see. The
+        label or annotation key under the provenance prefix is refused here, as
+        the prefix is a setting the model cannot see. The
         annotations say who (the caller's authenticated account), when, and in
         which request — a pointer back to the audit trail, not an audit record
         (ADR 0002).
 
         Raises:
-            ValidationException: A label key is under the provenance prefix.
+            ValidationException: A label or annotation key is under the
+                provenance prefix.
             NamespaceAlreadyExistsException: The name is taken — by a namespace
                 that is there, or by a Terminating one (CONTEXT.md), which the
                 message and ``detail["status"]`` tell apart.
             KubeApiException: On any other Kubernetes API failure.
         """
-        self._refuse_provenance_keys(labels)
+        self._refuse_provenance_keys(labels=labels, annotations=annotations or {})
         with translate_kube_errors(cluster, f"create namespace '{name}' in cluster '{cluster}'"):
             try:
                 ns = kube.create_namespace(
@@ -102,9 +104,12 @@ class NamespaceService:
                             # Nothing to clear on a new namespace, so an absent
                             # request id is left out rather than sent as null.
                             annotations={
-                                k: v
-                                for k, v in self._provenance("created", caller).items()
-                                if v is not None
+                                **(annotations or {}),
+                                **{
+                                    k: v
+                                    for k, v in self._provenance("created", caller).items()
+                                    if v is not None
+                                },
                             },
                         )
                     )
@@ -144,7 +149,7 @@ class NamespaceService:
                 f"Namespace '{name}' is reserved for Kubernetes; its labels cannot be "
                 "changed through this service.",
             )
-        self._refuse_provenance_keys(dict.fromkeys([*set_labels, *remove_labels]))
+        self._refuse_provenance_keys(labels=[*set_labels, *remove_labels])
         body = {
             "metadata": {
                 "labels": key_merge_patch(set_labels, remove_labels),
@@ -231,14 +236,20 @@ class NamespaceService:
         _logger.info("Read namespace | cluster=%s | name=%s", cluster, name)
         return _to_detail(cluster, ns)
 
-    def _refuse_provenance_keys(self, keys: Iterable[str]) -> None:
+    def _refuse_provenance_keys(
+        self, labels: Iterable[str] = (), annotations: Iterable[str] = ()
+    ) -> None:
         """The provenance prefix belongs to the service (ADR 0002): raise naming
-        every label key in ``keys`` under it, once each, so one refusal reveals
-        the whole set."""
-        under = [k for k in keys if is_under_domain(k, self._prefix)]
-        if under:
+        every label and annotation key under it, once each, so one refusal
+        reveals the whole set."""
+        named = []
+        for kind, keys in (("label", labels), ("annotation", annotations)):
+            under = [k for k in dict.fromkeys(keys) if is_under_domain(k, self._prefix)]
+            if under:
+                named.append(f"{kind} keys {under}")
+        if named:
             raise ValidationException(
-                f"label keys {under} are under '{self._prefix}', which belongs to "
+                f"{'; '.join(named)} are under '{self._prefix}', which belongs to "
                 "this service and cannot be written by a caller.",
             )
 
