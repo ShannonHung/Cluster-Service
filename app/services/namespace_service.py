@@ -93,6 +93,7 @@ class NamespaceService:
             KubeApiException: On any other Kubernetes API failure.
         """
         self._refuse_provenance_keys(list(annotations or {}))
+        self._refuse_provenance_keys(list(labels), kind="Label")
         with translate_kube_errors(cluster, f"create namespace '{name}' in cluster '{cluster}'"):
             try:
                 ns = kube.create_namespace(
@@ -138,7 +139,8 @@ class NamespaceService:
         request model; a key absent from the namespace is a no-op.
 
         Raises:
-            ValidationException: ``name`` is a Reserved namespace name.
+            ValidationException: ``name`` is a Reserved namespace name, or a
+                key is under the provenance domain (in ``set`` or ``remove``).
             NamespaceNotFoundException: The namespace does not exist.
             KubeApiException: On any other Kubernetes API failure.
         """
@@ -147,6 +149,7 @@ class NamespaceService:
                 f"Namespace '{name}' is reserved for Kubernetes; its labels cannot be "
                 "changed through this service.",
             )
+        self._refuse_provenance_keys([*set_labels, *remove_labels], kind="Label")
         body = {
             "metadata": {
                 "labels": key_merge_patch(set_labels, remove_labels),
@@ -285,11 +288,11 @@ class NamespaceService:
         _logger.info("Read namespace | cluster=%s | name=%s", cluster, name)
         return _to_detail(cluster, ns)
 
-    def _refuse_provenance_keys(self, keys: list[str]) -> None:
+    def _refuse_provenance_keys(self, keys: list[str], kind: str = "Annotation") -> None:
         reserved = provenance_keys(keys, self._prefix)
         if reserved:
             raise ValidationException(
-                f"Annotation keys {reserved} are under '{self._prefix}', which the "
+                f"{kind} keys {reserved} are under '{self._prefix}', which the "
                 "service writes itself; they cannot be set or removed.",
             )
 

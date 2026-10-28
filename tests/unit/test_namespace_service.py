@@ -415,6 +415,35 @@ def test_updating_a_missing_namespace_is_namespace_not_found():
         _update(kube, name="ghost", set_labels={"a": "b"})
 
 
+@pytest.mark.parametrize(
+    "set_labels, remove_labels",
+    [
+        ({"cs.acme.io/created-by": "x"}, []),
+        ({}, ["cs.acme.io/anything"]),
+        ({"sub.cs.acme.io/x": "y"}, []),
+    ],
+)
+def test_the_provenance_domain_is_refused_as_a_label_too(set_labels, remove_labels):
+    kube = MagicMock()
+
+    with pytest.raises(ValidationException, match="Label keys"):
+        _update(kube, set_labels=set_labels, remove_labels=remove_labels)
+
+    kube.patch_namespace.assert_not_called()
+
+
+def test_creating_with_a_provenance_label_is_refused_before_kubernetes():
+    kube = MagicMock()
+
+    with pytest.raises(ValidationException, match="Label keys"):
+        _svc().create_namespace(
+            cluster="c1", name="team-a", labels={"cs.acme.io/owner": "x"},
+            caller=Caller(account="alice", request_id="r"), kube=kube,
+        )
+
+    kube.create_namespace.assert_not_called()
+
+
 # ── annotations ───────────────────────────────────────────────────────────────
 
 

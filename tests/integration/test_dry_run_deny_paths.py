@@ -276,6 +276,9 @@ def test_missing_command_api_is_403(dry, method, path):
         ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/annotations", {"remove": ["cluster-service.test/created-at"]}),
         ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/annotations", {"set": {"a": "b"}, "remove": ["a"]}),
         ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/annotations", {}),
+        ("post", f"{_CLUSTER}/namespaces", {"name": "x", "labels": {"cluster-service.test/owner": "me"}}),
+        ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/labels", {"set": {"cluster-service.test/owner": "me"}}),
+        ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/labels", {"remove": ["cluster-service.test/owner"]}),
         ("patch", f"{_CLUSTER}/namespaces/kube-system/annotations", {"set": {"a": "b"}}),
     ],
 )

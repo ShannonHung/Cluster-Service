@@ -56,5 +56,6 @@ remove them. The annotations API (`namespaces` create's `annotations`, and
 domain — or a subdomain of it — is refused in `set` and in `remove` (422), and
 the service's stamps are written after the caller's, so they cannot be shadowed.
 The check lives in the service, not the request model, because the prefix is a
-deployment setting. The annotations patch stamps `last-modified-*` like a label
+deployment setting. Labels get the same check (create, `set`, `remove`), so the domain is
+closed to callers in both maps. The annotations patch stamps `last-modified-*` like a label
 update.
