@@ -8,6 +8,7 @@ Routes:
   GET  /api/v1/clusters/{cluster}/namespaces/{name} → read one namespace
   POST /api/v1/clusters/{cluster}/namespaces        → create a namespace
   PATCH /api/v1/clusters/{cluster}/namespaces/{name}/labels → set / remove labels
+  PATCH /api/v1/clusters/{cluster}/namespaces/{name}/annotations → set / remove annotations
 
 All require the ``cluster_api`` scope. Vocabulary follows CONTEXT.md,
 "Namespaces". There is deliberately no delete: it takes everything inside the
@@ -25,6 +26,8 @@ from app.core.dependencies import get_cluster_repo, get_current_user, get_policy
 from app.domain.access_policy import PolicyAction, PolicyParam
 from app.domain.kubernetes_models import (
     NAMESPACE_NAME_PATTERN,
+    NamespaceAnnotationsData,
+    NamespaceAnnotationsPatchRequest,
     NamespaceCreateRequest,
     NamespaceDetailData,
     NamespaceLabelsData,
@@ -137,7 +140,8 @@ async def get_namespace(
         "Creates a namespace from ``name`` (DNS-1123 label; not ``default``, "
         "not ``kube-*``) and optional ``labels``. A label key under "
         "``kubernetes.io`` / ``k8s.io`` (or a subdomain) is reserved: 422 "
-        "naming every such key. Any other field is 422. The service stamps its provenance annotations "
+        "naming every such key. Optional ``annotations``: a malformed key, or "
+        "one under ``<PROVENANCE_ANNOTATION_PREFIX>``, is 422. Any other field is 422. The service stamps its provenance annotations "
         "(``<PROVENANCE_ANNOTATION_PREFIX>/created-by``, ``/created-at``, "
         "``/last-request-id``): a pointer to the audit trail, not an audit "
         "record (ADR 0002). "
@@ -168,6 +172,7 @@ async def create_namespace(
             cluster=cluster,
             name=body.name,
             labels=body.labels,
+            annotations=body.annotations,
             caller=_caller(request, current_user),
             kube=kube,
         ),
@@ -214,6 +219,53 @@ async def patch_namespace_labels(
             name=name,
             set_labels=body.set,
             remove_labels=body.remove,
+            caller=_caller(request, current_user),
+            kube=kube,
+        ),
+    )
+    return ApiResponse(data=data, request_id=_request_id(request))
+
+
+@router.patch(
+    "/{cluster}/namespaces/{name}/annotations",
+    response_model=ApiResponse[NamespaceAnnotationsData],
+    summary="Set or remove namespace annotations",
+    description=(
+        "``set`` adds or overwrites annotations, ``remove`` deletes keys (an "
+        "absent key is a no-op); annotations are never replaced wholesale. The "
+        "response holds the namespace's **full current** annotations "
+        "(``last-applied-configuration`` left out). 422 when: a key is "
+        "malformed; a key is under ``<PROVENANCE_ANNOTATION_PREFIX>`` — in "
+        "``set`` or ``remove``, since the service alone writes those; both are "
+        "empty; a key is in both; or the namespace is ``default`` / "
+        "``kube-*``. 404 ``NAMESPACE_NOT_FOUND`` when it does not exist. Also "
+        "stamps ``<PROVENANCE_ANNOTATION_PREFIX>/last-modified-by``, "
+        "``/last-modified-at`` and ``/last-request-id`` (ADR 0002)."
+    ),
+)
+async def patch_namespace_annotations(
+    request: Request,
+    cluster: str,
+    body: NamespaceAnnotationsPatchRequest,
+    current_user: Annotated[User, Depends(get_current_user(["cluster_api"]))],
+    name: str = Path(..., max_length=63, pattern=NAMESPACE_NAME_PATTERN),
+    repo: ClusterRepository = Depends(get_cluster_repo),
+    svc: NamespaceService = Depends(_get_namespace_service),
+    policy: PolicyService = Depends(get_policy_service),
+) -> ApiResponse[NamespaceAnnotationsData]:
+    await policy.enforce(
+        current_user,
+        PolicyAction.NAMESPACE_ANNOTATE,
+        {PolicyParam.CLUSTER: cluster, PolicyParam.NAMESPACE: name},
+    )
+    data = await call_kube(
+        repo,
+        cluster,
+        lambda kube: svc.update_annotations(
+            cluster=cluster,
+            name=name,
+            set_annotations=body.set,
+            remove_annotations=body.remove,
             caller=_caller(request, current_user),
             kube=kube,
         ),

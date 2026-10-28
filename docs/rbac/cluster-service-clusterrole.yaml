@@ -69,7 +69,7 @@ rules:
   # create — POST /clusters/{cluster}/namespaces
   #          `create` cannot be limited by resourceNames, so this grant allows
   #          any name; cluster-service itself refuses `default` and `kube-*`.
-  # patch  — PATCH /clusters/{cluster}/namespaces/{name}/labels
+  # patch  — PATCH /clusters/{cluster}/namespaces/{name}/labels and /annotations
   #          Also not narrowed by resourceNames (any namespace may be
   #          relabelled), so this grant reaches `kube-system` too:
   #          cluster-service itself refuses `default` / `kube-*` and every

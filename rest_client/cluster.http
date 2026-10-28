@@ -311,6 +311,25 @@ Content-Type: application/json
   "remove": ["obsolete"]
 }
 
+### Set / remove namespace annotations
+PATCH {{baseUrl}}/api/v1/clusters/{{cluster}}/namespaces/demo-team/annotations
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "set": {"owner": "platform-team"},
+  "remove": ["obsolete"]
+}
+
+### Provenance annotation domain → 422 (only the service writes it)
+PATCH {{baseUrl}}/api/v1/clusters/{{cluster}}/namespaces/demo-team/annotations
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "set": {"cs.example.com/created-by": "someone-else"}
+}
+
 ### Reserved label key → 422 (would loosen Pod Security)
 PATCH {{baseUrl}}/api/v1/clusters/{{cluster}}/namespaces/demo-team/labels
 Authorization: Bearer {{token}}

@@ -43,7 +43,7 @@
                 {
                     "id": "operator-dev-stg-only",
                     "description": "operator works on dev and staging clusters only",
-                    "actions": ["node.cordon", "node.uncordon", "node.drain", "node.label", "node.annotate", "namespace.create"],
+                    "actions": ["node.cordon", "node.uncordon", "node.drain", "node.label", "node.annotate", "namespace.create", "namespace.annotate"],
                     "effect": "allow",
                     "match": { "cluster": "(dev|stg)-.*" }
                 },

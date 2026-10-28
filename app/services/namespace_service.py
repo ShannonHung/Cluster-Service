@@ -1,7 +1,7 @@
 """
 app/services/namespace_service.py
 
-NamespaceService — lists, reads and creates namespaces on a cluster.
+NamespaceService — lists, reads, creates and relabels / re-annotates namespaces on a cluster.
 
 Vocabulary follows CONTEXT.md, "Namespaces". The service never deletes a
 namespace: deletion takes everything inside it, irreversibly.
@@ -23,6 +23,7 @@ from app.core.exceptions import (
     ValidationException,
 )
 from app.domain.kubernetes_models import (
+    NamespaceAnnotationsData,
     NamespaceDetailData,
     NamespaceLabelsData,
     NamespaceListData,
@@ -30,6 +31,7 @@ from app.domain.kubernetes_models import (
     NamespaceSummary,
     is_reserved_namespace_name,
 )
+from app.domain.label_rules import provenance_keys
 from app.domain.models import Caller
 from app.services.kube_errors import translate_kube_errors
 from app.services.kube_patch import key_merge_patch
@@ -72,6 +74,7 @@ class NamespaceService:
         labels: dict[str, str],
         caller: Caller,
         kube: CoreV1Api,
+        annotations: dict[str, str] | None = None,
     ) -> NamespaceDetailData:
         """Create a namespace stamped with its provenance annotations.
 
@@ -82,11 +85,14 @@ class NamespaceService:
         (ADR 0002).
 
         Raises:
+            ValidationException: ``annotations`` has a key under the provenance
+                annotation domain, which the service alone writes.
             NamespaceAlreadyExistsException: The name is taken — by a namespace
                 that is there, or by a Terminating one (CONTEXT.md), which the
                 message and ``detail["status"]`` tell apart.
             KubeApiException: On any other Kubernetes API failure.
         """
+        self._refuse_provenance_keys(list(annotations or {}))
         with translate_kube_errors(cluster, f"create namespace '{name}' in cluster '{cluster}'"):
             try:
                 ns = kube.create_namespace(
@@ -97,9 +103,12 @@ class NamespaceService:
                             # Nothing to clear on a new namespace, so an absent
                             # request id is left out rather than sent as null.
                             annotations={
-                                k: v
-                                for k, v in self._provenance("created", caller).items()
-                                if v is not None
+                                **(annotations or {}),
+                                **{
+                                    k: v
+                                    for k, v in self._provenance("created", caller).items()
+                                    if v is not None
+                                },
                             },
                         )
                     )
@@ -158,6 +167,58 @@ class NamespaceService:
             cluster, name, sorted(set_labels), sorted(remove_labels), caller.account,
         )
         return NamespaceLabelsData(cluster=cluster, name=name, labels=ns.metadata.labels or {})
+
+    def update_annotations(
+        self,
+        cluster: str,
+        name: str,
+        set_annotations: dict[str, str],
+        remove_annotations: list[str],
+        caller: Caller,
+        kube: CoreV1Api,
+    ) -> NamespaceAnnotationsData:
+        """Add / overwrite ``set_annotations`` and delete ``remove_annotations``
+        in one patch, stamping ``last-modified-*`` and ``last-request-id``
+        alongside (ADR 0002). The provenance annotation domain is refused in
+        both ``set`` and ``remove``: only the service writes it, so a caller can
+        neither forge nor erase a stamp.
+
+        Raises:
+            ValidationException: ``name`` is a Reserved namespace name, or a
+                key is under the provenance annotation domain.
+            NamespaceNotFoundException: The namespace does not exist.
+            KubeApiException: On any other Kubernetes API failure.
+        """
+        if is_reserved_namespace_name(name):
+            raise ValidationException(
+                f"Namespace '{name}' is reserved for Kubernetes; its annotations cannot be "
+                "changed through this service.",
+            )
+        self._refuse_provenance_keys([*set_annotations, *remove_annotations])
+        body = {
+            "metadata": {
+                "annotations": {
+                    **key_merge_patch(set_annotations, remove_annotations),
+                    **self._provenance("last-modified", caller),
+                }
+            }
+        }
+        with translate_kube_errors(
+            cluster,
+            f"patch annotations on namespace '{name}' of cluster '{cluster}'",
+            not_found=lambda: NamespaceNotFoundException(
+                f"Namespace '{name}' not found in cluster '{cluster}'.",
+            ),
+        ):
+            ns = kube.patch_namespace(name, body)
+
+        _logger.info(
+            "Patched namespace annotations | cluster=%s | name=%s | set=%s | remove=%s | user=%s",
+            cluster, name, sorted(set_annotations), sorted(remove_annotations), caller.account,
+        )
+        return NamespaceAnnotationsData(
+            cluster=cluster, name=name, annotations=_visible_annotations(ns)
+        )
 
     def list_namespaces(
         self,
@@ -224,6 +285,14 @@ class NamespaceService:
         _logger.info("Read namespace | cluster=%s | name=%s", cluster, name)
         return _to_detail(cluster, ns)
 
+    def _refuse_provenance_keys(self, keys: list[str]) -> None:
+        reserved = provenance_keys(keys, self._prefix)
+        if reserved:
+            raise ValidationException(
+                f"Annotation keys {reserved} are under '{self._prefix}', which the "
+                "service writes itself; they cannot be set or removed.",
+            )
+
     def _provenance(self, verb: str, caller: Caller) -> dict[str, str | None]:
         """``<prefix>/<verb>-by``, ``<prefix>/<verb>-at`` and
         ``<prefix>/last-request-id``, as merge-patch values. With no request id
@@ -284,16 +353,17 @@ def _phase(ns: V1Namespace) -> NamespacePhase:
     return ns.status.phase if ns.status and ns.status.phase else "Active"
 
 
+def _visible_annotations(ns: V1Namespace) -> dict[str, str]:
+    return {k: v for k, v in (ns.metadata.annotations or {}).items() if k != _LAST_APPLIED}
+
+
 def _to_detail(cluster: str, ns: V1Namespace) -> NamespaceDetailData:
-    annotations = {
-        k: v for k, v in (ns.metadata.annotations or {}).items() if k != _LAST_APPLIED
-    }
     return NamespaceDetailData(
         cluster=cluster,
         name=ns.metadata.name,
         status=_phase(ns),
         labels=ns.metadata.labels or {},
-        annotations=annotations,
+        annotations=_visible_annotations(ns),
         creation_timestamp=ns.metadata.creation_timestamp,
         deletion_timestamp=ns.metadata.deletion_timestamp,
     )

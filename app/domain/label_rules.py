@@ -22,10 +22,15 @@ def is_dns_subdomain(value: str) -> bool:
     return len(value) <= DNS_SUBDOMAIN_MAX and bool(_DNS_SUBDOMAIN.match(value))
 
 
+def is_under_domain(domain: str, root: str) -> bool:
+    """True for `root` itself and any subdomain of it — but not for a domain
+    that merely ends in the same letters (`notkubernetes.io`)."""
+    return domain == root or domain.endswith("." + root)
+
+
 def is_reserved_domain(domain: str) -> bool:
-    """True for `kubernetes.io`, `k8s.io` and any subdomain of either — but not
-    for a domain that merely ends in the same letters (`notkubernetes.io`)."""
-    return any(domain == d or domain.endswith("." + d) for d in _RESERVED_DOMAINS)
+    """True for `kubernetes.io`, `k8s.io` and any subdomain of either."""
+    return any(is_under_domain(domain, d) for d in _RESERVED_DOMAINS)
 
 
 # A label name (the part after the optional `prefix/`) and a non-empty label
@@ -81,3 +86,22 @@ def check_labels(labels: dict[str, str]) -> None:
         problems.append(f"malformed label values for keys {bad_values}")
     if problems:
         raise ValueError("; ".join(problems))
+
+
+def check_annotation_keys(keys: list[str]) -> None:
+    """Raise ValueError naming every malformed annotation key at once. An
+    annotation key has the shape of a label key; unlike a label it is not
+    refused for living under `kubernetes.io` — only the service's own
+    provenance prefix is off limits, and that is a deployment setting checked
+    by `provenance_keys`."""
+    malformed = [k for k in keys if _malformed_key(k)]
+    if malformed:
+        raise ValueError(f"malformed annotation keys {malformed}")
+
+
+def provenance_keys(keys: list[str], prefix: str) -> list[str]:
+    """The keys under the service's provenance annotation domain `prefix`
+    (ADR 0002) — the domain itself or a subdomain of it — in request order."""
+    return [
+        k for k in keys if "/" in k and is_under_domain(k.rpartition("/")[0], prefix)
+    ]

@@ -20,7 +20,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.domain.label_rules import check_label_keys, check_labels
+from app.domain.label_rules import check_annotation_keys, check_label_keys, check_labels
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -357,7 +357,7 @@ def is_reserved_namespace_name(name: str) -> bool:
 class NamespaceCreateRequest(BaseModel):
     """Request body for POST /api/v1/clusters/{cluster}/namespaces.
 
-    ``extra="forbid"``: any field but ``name`` and ``labels`` (a typo
+    ``extra="forbid"``: any field but ``name``, ``labels`` and ``annotations`` (a typo
     included) is a 422, never silently dropped. Every check here runs before
     Kubernetes is called: RBAC cannot restrict a ``create`` by name, so this is
     the only place the name is bounded — and the only place a Reserved label
@@ -379,12 +379,25 @@ class NamespaceCreateRequest(BaseModel):
             "subdomain) are reserved and refused."
         ),
     )
+    annotations: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Namespace annotations. Keys under the service's provenance "
+            "annotation domain are reserved for it and refused."
+        ),
+    )
 
     @field_validator("labels")
     @classmethod
     def _valid_labels(cls, labels: dict[str, str]) -> dict[str, str]:
         check_labels(labels)
         return labels
+
+    @field_validator("annotations")
+    @classmethod
+    def _valid_annotations(cls, annotations: dict[str, str]) -> dict[str, str]:
+        check_annotation_keys(list(annotations))
+        return annotations
 
     @field_validator("name")
     @classmethod
@@ -433,6 +446,55 @@ class NamespaceLabelsPatchRequest(BaseModel):
         if both:
             raise ValueError(f"label keys {both} are in both `set` and `remove`")
         return self
+
+
+class NamespaceAnnotationsPatchRequest(BaseModel):
+    """Request body for PATCH /api/v1/clusters/{cluster}/namespaces/{name}/annotations.
+
+    Annotations change key by key, never wholesale, like labels. Key *shape* is
+    checked here; the provenance annotation domain (ADR 0002) is a deployment
+    setting, so the service refuses it — in ``remove`` as well as ``set``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    set: dict[str, str] = Field(
+        default_factory=dict, description="Annotations to add or overwrite."
+    )
+    remove: list[str] = Field(
+        default_factory=list, description="Annotation keys to delete; an absent key is a no-op."
+    )
+
+    @field_validator("set")
+    @classmethod
+    def _valid_set(cls, annotations: dict[str, str]) -> dict[str, str]:
+        check_annotation_keys(list(annotations))
+        return annotations
+
+    @field_validator("remove")
+    @classmethod
+    def _valid_remove(cls, keys: list[str]) -> list[str]:
+        check_annotation_keys(keys)
+        return keys
+
+    @model_validator(mode="after")
+    def _a_change_and_no_contradiction(self) -> "NamespaceAnnotationsPatchRequest":
+        if not self.set and not self.remove:
+            raise ValueError("nothing to change: give `set`, `remove`, or both")
+        both = sorted(self.set.keys() & set(self.remove))
+        if both:
+            raise ValueError(f"annotation keys {both} are in both `set` and `remove`")
+        return self
+
+
+class NamespaceAnnotationsData(BaseModel):
+    """Response body for PATCH …/namespaces/{name}/annotations — the namespace's
+    full current annotations after the update (``last-applied-configuration``
+    left out, as in a read)."""
+
+    cluster: str
+    name: str
+    annotations: dict[str, str] = Field(default_factory=dict)
 
 
 class NamespaceLabelsData(BaseModel):

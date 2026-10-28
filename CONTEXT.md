@@ -144,12 +144,13 @@ it. Refused on create and on update alike; the list is fixed, not
 configurable, and a refusal names every offending key at once.
 
 **Provenance annotations** — Annotations the service itself puts on a namespace
-it creates or relabels: who (the authenticated account), when, and which
+it creates, relabels or re-annotates: who (the authenticated account), when, and which
 request. They belong to the service; no caller can set or remove them. A
 convenience pointer back to the audit trail, **not** an audit record: anyone
 with direct cluster access can alter them, and they show only the latest write.
 "Created" is recorded once and never overwritten; "last modified" moves with
-each label update. See ADR 0002.
+each label or annotation update. Callers may set their own annotations, but
+none under the provenance prefix domain (in `set` or `remove`). See ADR 0002.
 
 A newly created namespace grants the service **nothing** inside it: in
 particular its ConfigMaps are unreadable until someone grants that namespace

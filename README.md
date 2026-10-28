@@ -102,8 +102,9 @@ router (app/api/v1/)
 |--------|------|-------------|
 | `GET` | `/api/v1/clusters/{cluster}/namespaces` | List namespaces; filter by `name` (prefixes), `status` (`Active` / `Terminating`), `label_selector`. Returns every match (paging is internal) |
 | `GET` | `/api/v1/clusters/{cluster}/namespaces/{name}` | Read one namespace; 404 `NAMESPACE_NOT_FOUND` |
-| `POST` | `/api/v1/clusters/{cluster}/namespaces` | Create a namespace from `{"name": "...", "labels": {...}}` (`labels` optional); 201. `default` / `kube-*`, non-DNS-1123 names, malformed labels, label keys under `kubernetes.io` / `k8s.io` (or a subdomain) and any other body field are 422. 409 `NAMESPACE_ALREADY_EXISTS`, with `detail.status` = `Terminating` when the existing one is still being deleted |
+| `POST` | `/api/v1/clusters/{cluster}/namespaces` | Create a namespace from `{"name": "...", "labels": {...}, "annotations": {...}}` (`labels` / `annotations` optional); 201. Annotation keys that are malformed or under `PROVENANCE_ANNOTATION_PREFIX` are 422. `default` / `kube-*`, non-DNS-1123 names, malformed labels, label keys under `kubernetes.io` / `k8s.io` (or a subdomain) and any other body field are 422. 409 `NAMESPACE_ALREADY_EXISTS`, with `detail.status` = `Terminating` when the existing one is still being deleted |
 | `PATCH` | `/api/v1/clusters/{cluster}/namespaces/{name}/labels` | `{"set": {...}, "remove": [...]}` — add/overwrite and delete labels key by key (absent key = no-op); returns the full current labels. 422 for `kubernetes.io` / `k8s.io` keys (in `set` or `remove`), malformed labels, an empty or contradictory body, or `default` / `kube-*`. 404 `NAMESPACE_NOT_FOUND`. Stamps `last-modified-by` / `-at` / `last-request-id` |
+| `PATCH` | `/api/v1/clusters/{cluster}/namespaces/{name}/annotations` | `{"set": {...}, "remove": [...]}` — add/overwrite and delete annotations key by key (absent key = no-op); returns the full current annotations. 422 for malformed keys, keys under `PROVENANCE_ANNOTATION_PREFIX` (in `set` or `remove` — the service alone writes those), an empty or contradictory body, or `default` / `kube-*`. 404 `NAMESPACE_NOT_FOUND`. Stamps `last-modified-by` / `-at` / `last-request-id` |
 
 There is no delete endpoint: deleting a namespace takes everything in it.
 A created namespace is stamped with **provenance annotations** under
@@ -241,6 +242,7 @@ An action is a fixed name for one kind of write, `<resource>.<verb>`. The list i
 | `node.taint` | `cluster`, `node` | `PATCH …/nodes/{node}/taints` |
 | `namespace.create` | `cluster`, `namespace` | `POST /api/v1/clusters/{cluster}/namespaces` (`namespace` = body `name`) |
 | `namespace.label` | `cluster`, `namespace` | `PATCH /api/v1/clusters/{cluster}/namespaces/{name}/labels` |
+| `namespace.annotate` | `cluster`, `namespace` | `PATCH /api/v1/clusters/{cluster}/namespaces/{name}/annotations` |
 
 Only writes are policed — every `GET` is unaffected, and so are the deploy / command / inventory proxies (deploy-service restricts those itself). A name not in this table, or a `match` key the rule's actions do not have (e.g. `node` on `namespace.create`), makes the file invalid rather than leaving an inert rule. A new write endpoint gets its action added to `PolicyAction` / `POLICY_ACTIONS` and to this table.
 
@@ -320,6 +322,7 @@ namespace instead.
 | `GET /clusters/{cluster}/namespaces/{name}` | `namespaces` | `get` |
 | `POST /clusters/{cluster}/namespaces` | `namespaces` | `create`, `get` (`get` only on 409, to tell a Terminating namespace apart) |
 | `PATCH /clusters/{cluster}/namespaces/{name}/labels` | `namespaces` | `patch` |
+| `PATCH /clusters/{cluster}/namespaces/{name}/annotations` | `namespaces` | `patch` |
 
 All paths are under `/api/v1`. `GET /clusters` reads local config only and
 needs no Kubernetes permission.

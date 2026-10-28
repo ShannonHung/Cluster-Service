@@ -51,4 +51,10 @@ service has verified. No caller-asserted identity (e.g. an on-behalf-of header)
 is recorded.
 
 These annotations belong to the service: no caller-facing field can set or
-remove them, and any future annotations API must treat the prefix as reserved.
+remove them. The annotations API (`namespaces` create's `annotations`, and
+`PATCH …/namespaces/{name}/annotations`) enforces this: a key under the prefix
+domain — or a subdomain of it — is refused in `set` and in `remove` (422), and
+the service's stamps are written after the caller's, so they cannot be shadowed.
+The check lives in the service, not the request model, because the prefix is a
+deployment setting. The annotations patch stamps `last-modified-*` like a label
+update.

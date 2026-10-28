@@ -413,3 +413,105 @@ def test_updating_a_missing_namespace_is_namespace_not_found():
 
     with pytest.raises(NamespaceNotFoundException):
         _update(kube, name="ghost", set_labels={"a": "b"})
+
+
+# ── annotations ───────────────────────────────────────────────────────────────
+
+
+def _annotate(kube: MagicMock, name: str = "team-a", set_annotations=None, remove_annotations=None):
+    return _svc().update_annotations(
+        cluster="c1", name=name, set_annotations=set_annotations or {},
+        remove_annotations=remove_annotations or [],
+        caller=Caller(account="bob", request_id="req-2"), kube=kube,
+    )
+
+
+def test_the_callers_annotations_are_sent_with_the_provenance_stamps():
+    kube = MagicMock()
+    kube.create_namespace.side_effect = lambda body: body
+
+    result = _svc().create_namespace(
+        cluster="c1", name="team-a", labels={}, annotations={"owner": "team-a"},
+        caller=Caller(account="alice", request_id="r"), kube=kube,
+    )
+
+    sent = kube.create_namespace.call_args.args[0].metadata.annotations
+    assert sent["owner"] == "team-a"
+    assert sent["cs.acme.io/created-by"] == "alice"
+    assert result.annotations == sent
+
+
+@pytest.mark.parametrize("key", ["cs.acme.io/created-by", "x.cs.acme.io/anything"])
+def test_creating_with_a_provenance_annotation_is_refused_before_kubernetes(key):
+    kube = MagicMock()
+
+    with pytest.raises(ValidationException, match="cs.acme.io"):
+        _svc().create_namespace(
+            cluster="c1", name="team-a", labels={}, annotations={key: "forged"},
+            caller=Caller(account="alice", request_id="r"), kube=kube,
+        )
+
+    kube.create_namespace.assert_not_called()
+
+
+def test_an_annotation_update_is_one_merge_patch_with_null_for_each_removal():
+    kube = MagicMock()
+    kube.patch_namespace.return_value = _ns(
+        "team-a", annotations={"owner": "b", _LAST_APPLIED: "{}"}
+    )
+
+    result = _annotate(kube, set_annotations={"owner": "b"}, remove_annotations=["old"])
+
+    name, body = kube.patch_namespace.call_args.args
+    annotations = body["metadata"]["annotations"]
+    assert name == "team-a"
+    assert "labels" not in body["metadata"]
+    assert annotations["owner"] == "b" and annotations["old"] is None
+    assert annotations["cs.acme.io/last-modified-by"] == "bob"
+    assert annotations["cs.acme.io/last-request-id"] == "req-2"
+    assert not any(k.startswith("cs.acme.io/created") for k in annotations)
+    assert result.annotations == {"owner": "b"}  # last-applied left out
+
+
+@pytest.mark.parametrize(
+    "set_annotations, remove_annotations",
+    [
+        ({"cs.acme.io/created-by": "mallory"}, []),
+        ({}, ["cs.acme.io/created-at"]),
+        ({"sub.cs.acme.io/x": "y"}, []),
+    ],
+)
+def test_the_provenance_domain_is_refused_in_set_and_remove(set_annotations, remove_annotations):
+    kube = MagicMock()
+
+    with pytest.raises(ValidationException):
+        _annotate(kube, set_annotations=set_annotations, remove_annotations=remove_annotations)
+
+    kube.patch_namespace.assert_not_called()
+
+
+def test_a_domain_that_only_ends_alike_is_not_the_provenance_domain():
+    kube = MagicMock()
+    kube.patch_namespace.return_value = _ns("team-a")
+
+    _annotate(kube, set_annotations={"notcs.acme.io/x": "y"})
+
+    kube.patch_namespace.assert_called_once()
+
+
+@pytest.mark.parametrize("name", ["default", "kube-system"])
+def test_annotating_a_reserved_namespace_is_refused_before_kubernetes(name):
+    kube = MagicMock()
+
+    with pytest.raises(ValidationException):
+        _annotate(kube, name=name, set_annotations={"a": "b"})
+
+    kube.patch_namespace.assert_not_called()
+
+
+def test_annotating_a_missing_namespace_is_namespace_not_found():
+    kube = MagicMock()
+    kube.patch_namespace.side_effect = ApiException(status=404, reason="Not Found")
+
+    with pytest.raises(NamespaceNotFoundException):
+        _annotate(kube, name="ghost", set_annotations={"a": "b"})

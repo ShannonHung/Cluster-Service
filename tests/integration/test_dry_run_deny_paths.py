@@ -123,6 +123,7 @@ _PROTECTED = [
     ("get", f"{_CLUSTER}/namespaces/default"),
     ("post", f"{_CLUSTER}/namespaces"),
     ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/labels"),
+    ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/annotations"),
     ("post", "/api/v1/deploy"),
     ("get", "/api/v1/deploy/1"),
     ("get", "/api/v1/command/info"),
@@ -161,6 +162,7 @@ def test_garbage_token_is_401(dry, method, path):
         ("get", f"{_CLUSTER}/namespaces/default"),
         ("post", f"{_CLUSTER}/namespaces"),
         ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/labels"),
+        ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/annotations"),
     ],
 )
 def test_missing_cluster_api_is_403(dry, method, path):
@@ -245,7 +247,7 @@ def test_missing_command_api_is_403(dry, method, path):
         ("post", f"{_CLUSTER}/nodes:uncordon", {}),
         ("post", "/api/v1/deploy?action=a", {"variables": "not-a-list"}),
         ("post", "/api/v1/command/execution", {"command_name": "dry_run_ansible_ping"}),
-        ("post", f"{_CLUSTER}/namespaces", {"name": "x", "annotations": {"a": "b"}}),
+        ("post", f"{_CLUSTER}/namespaces", {"name": "x", "owner": "b"}),
         (
             "post",
             f"{_CLUSTER}/namespaces",
@@ -268,6 +270,13 @@ def test_missing_command_api_is_403(dry, method, path):
         ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/labels", {"set": {"team": "bad value"}}),
         ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/labels", {}),
         ("patch", f"{_CLUSTER}/namespaces/kube-system/labels", {"set": {"team": "a"}}),
+        ("post", f"{_CLUSTER}/namespaces", {"name": "x", "annotations": {"cluster-service.test/created-by": "me"}}),
+        ("post", f"{_CLUSTER}/namespaces", {"name": "x", "annotations": {"Bad Key": "v"}}),
+        ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/annotations", {"set": {"cluster-service.test/created-by": "me"}}),
+        ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/annotations", {"remove": ["cluster-service.test/created-at"]}),
+        ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/annotations", {"set": {"a": "b"}, "remove": ["a"]}),
+        ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/annotations", {}),
+        ("patch", f"{_CLUSTER}/namespaces/kube-system/annotations", {"set": {"a": "b"}}),
     ],
 )
 def test_invalid_body_is_422(dry, full, method, path, body):

@@ -182,12 +182,12 @@ def test_creating_a_terminating_name_says_it_is_being_deleted(client, headers):
     "body",
     [
         {"name": "team-a", "lables": {}},  # a typo is refused, not silently dropped
-        {"name": "team-a", "annotations": {"a": "b"}},
+        {"name": "team-a", "owner": "b"},
         {},
     ],
-    ids=["unknown-field", "annotations", "no-name"],
+    ids=["unknown-field", "other-field", "no-name"],
 )
-def test_a_body_with_anything_but_a_name_and_labels_is_422(client, headers, body):
+def test_a_body_with_anything_but_name_labels_and_annotations_is_422(client, headers, body):
     assert _create(client, headers, body).status_code == 422
 
 
@@ -384,3 +384,39 @@ def test_a_malformed_update_is_422_and_changes_nothing(client, headers, body):
 
     assert _patch(client, headers, "team-a", body).status_code == 422
     assert _read(client, headers, "team-a") == before
+
+
+# ── annotations ───────────────────────────────────────────────────────────────
+
+
+def test_created_annotations_sit_beside_the_provenance_stamps(client, headers):
+    resp = _create(client, headers, {"name": "team-a", "annotations": {"owner": "platform"}})
+
+    assert resp.status_code == 201, resp.text
+    annotations = client.get(f"{_URL}/team-a", headers=headers).json()["data"]["annotations"]
+    assert annotations["owner"] == "platform"
+    assert annotations["cluster-service.test/created-by"] == "test_admin"
+
+
+def test_annotations_change_key_by_key_and_keep_provenance(client, headers):
+    _create(client, headers, {"name": "team-a", "annotations": {"owner": "a", "old": "x"}})
+
+    resp = client.patch(
+        f"{_URL}/team-a/annotations", headers=headers,
+        json={"set": {"owner": "b"}, "remove": ["old"]},
+    )
+
+    assert resp.status_code == 200, resp.text
+    annotations = resp.json()["data"]["annotations"]
+    assert annotations["owner"] == "b"
+    assert "old" not in annotations
+    assert annotations["cluster-service.test/created-by"] == "test_admin"
+    assert annotations["cluster-service.test/last-modified-by"] == "test_admin"
+    assert client.get(f"{_URL}/team-a", headers=headers).json()["data"]["annotations"] == annotations
+
+
+def test_annotating_a_missing_namespace_is_404(client, headers):
+    resp = client.patch(f"{_URL}/ghost/annotations", headers=headers, json={"set": {"a": "b"}})
+
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "NAMESPACE_NOT_FOUND"

@@ -61,6 +61,7 @@ _ROUTES = [
     ("namespaces", "get", f"{_CLUSTER}/namespaces/default", {}, None),
     ("namespaces", "post", f"{_CLUSTER}/namespaces", {}, {"name": "off-loop-test"}),
     ("namespaces", "patch", f"{_CLUSTER}/namespaces/dry-run-apps/labels", {}, {"set": {"dry-run-test": "x"}}),
+    ("namespaces", "patch", f"{_CLUSTER}/namespaces/dry-run-apps/annotations", {}, {"set": {"dry-run-test": "x"}}),
 ]
 
 _ROUTERS = Path(__file__).resolve().parents[2] / "app" / "api" / "v1"
