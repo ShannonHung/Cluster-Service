@@ -70,10 +70,12 @@ rules:
   #          `create` cannot be limited by resourceNames, so this grant allows
   #          any name; cluster-service itself refuses `default` and `kube-*`.
   # patch  — PATCH /clusters/{cluster}/namespaces/{name}/labels
+  #          PATCH /clusters/{cluster}/namespaces/{name}/annotations
   #          Also not narrowed by resourceNames (any namespace may be
-  #          relabelled), so this grant reaches `kube-system` too:
-  #          cluster-service itself refuses `default` / `kube-*` and every
-  #          kubernetes.io / k8s.io label key (e.g. pod-security.*).
+  #          relabelled or annotated), so this grant reaches `kube-system` too:
+  #          cluster-service itself refuses `default` / `kube-*`, every
+  #          kubernetes.io / k8s.io label or annotation key (e.g.
+  #          pod-security.*) and every key under its provenance prefix.
   # Namespaces are cluster-scoped, so they can only be granted here, never in a
   # namespaced Role. No grant here reaches *inside* a namespace: ConfigMaps stay
   # per-namespace Roles (below).

@@ -136,20 +136,35 @@ parties (controllers, operators) put labels there too and a wholesale replace
 would silently erase theirs. Labels on a **Reserved namespace name** cannot be
 changed through the service, just as such a namespace cannot be created.
 
+**Namespace annotation** — A key/value note on a namespace whose value is
+free-form (unlike a label's): any text, including empty. Can be given when the
+namespace is created, and later added, overwritten or removed key by key —
+never replaced wholesale, for the same reason as labels. Annotations on a
+**Reserved namespace name** cannot be changed through the service. A
+**Reserved label key** is equally reserved as an annotation key, since
+Kubernetes admission acts on some annotations too (e.g. the scheduler's node
+selector). Keys under the **Provenance prefix** are the service's own.
+
 **Reserved label key** — A label key whose prefix is `kubernetes.io`, `k8s.io`,
 or a subdomain of either. These are not just tags: Kubernetes acts on them (e.g.
 the Pod Security level enforced in the namespace), so setting or removing one
 would be a way to change a namespace's security posture rather than describe
-it. Refused on create and on update alike; the list is fixed, not
-configurable, and a refusal names every offending key at once.
+it. Refused on create and on update alike, and as an annotation key too; the
+list is fixed, not configurable, and a refusal names every offending key at once.
+
+**Provenance prefix** — The domain the service's own annotations live under,
+set per deployment. It is the team's internal namespace: no caller may set or
+remove a label or an annotation key under it (nor under a subdomain of it),
+whatever the key's purpose. Refused on create and on every update, and a
+refusal names every offending key at once.
 
 **Provenance annotations** — Annotations the service itself puts on a namespace
-it creates or relabels: who (the authenticated account), when, and which
-request. They belong to the service; no caller can set or remove them. A
+it creates, relabels or re-annotates: who (the authenticated account), when, and
+which request. They belong to the service; no caller can set or remove them. A
 convenience pointer back to the audit trail, **not** an audit record: anyone
 with direct cluster access can alter them, and they show only the latest write.
 "Created" is recorded once and never overwritten; "last modified" moves with
-each label update. See ADR 0002.
+each label or annotation update. See ADR 0002.
 
 A newly created namespace grants the service **nothing** inside it: in
 particular its ConfigMaps are unreadable until someone grants that namespace

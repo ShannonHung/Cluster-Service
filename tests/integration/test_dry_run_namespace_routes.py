@@ -182,12 +182,12 @@ def test_creating_a_terminating_name_says_it_is_being_deleted(client, headers):
     "body",
     [
         {"name": "team-a", "lables": {}},  # a typo is refused, not silently dropped
-        {"name": "team-a", "annotations": {"a": "b"}},
+        {"name": "team-a", "annotation": {"a": "b"}},  # singular: a typo, not the field
         {},
     ],
-    ids=["unknown-field", "annotations", "no-name"],
+    ids=["unknown-field", "annotations-typo", "no-name"],
 )
-def test_a_body_with_anything_but_a_name_and_labels_is_422(client, headers, body):
+def test_a_body_with_anything_but_a_name_labels_and_annotations_is_422(client, headers, body):
     assert _create(client, headers, body).status_code == 422
 
 
@@ -243,6 +243,43 @@ def test_reserved_label_keys_are_422_naming_every_one(client, headers):
     body = resp.text
     for key in ("pod-security.kubernetes.io/enforce", "k8s.io/anything", "kubernetes.io/metadata.name"):
         assert key in body
+    assert "team-a" not in _list(client, headers)
+
+
+def test_annotations_given_at_creation_are_kept_beside_the_provenance_stamps(client, headers):
+    resp = _create(client, headers, {"name": "team-a", "annotations": {"owner": "alice"}})
+
+    assert resp.status_code == 201, resp.text
+    annotations = _read(client, headers, "team-a")["annotations"]
+    assert annotations["owner"] == "alice"
+    assert annotations["cluster-service.test/created-by"] == "test_admin"
+
+
+def test_an_annotation_under_the_provenance_prefix_is_422_and_nothing_is_created(client, headers):
+    key = "cluster-service.test/created-by"
+
+    resp = _create(client, headers, {"name": "team-a", "annotations": {key: "mallory"}})
+
+    assert resp.status_code == 422
+    assert key in resp.text
+    assert "team-a" not in _list(client, headers)
+
+
+def test_a_malformed_annotation_key_is_422_and_nothing_is_created(client, headers):
+    resp = _create(client, headers, {"name": "team-a", "annotations": {"Bad Key": "x"}})
+
+    assert resp.status_code == 422
+    assert "team-a" not in _list(client, headers)
+
+
+def test_a_label_under_the_provenance_prefix_is_422_and_nothing_is_created(client, headers):
+    """ADR 0002: the prefix belongs to the service, labels included."""
+    key = "cluster-service.test/created-by"
+
+    resp = _create(client, headers, {"name": "team-a", "labels": {key: "mallory"}})
+
+    assert resp.status_code == 422
+    assert key in resp.text
     assert "team-a" not in _list(client, headers)
 
 
@@ -352,6 +389,20 @@ def test_a_reserved_namespace_cannot_be_relabelled(client, headers, name):
 
 
 @pytest.mark.parametrize("field", ["set", "remove"])
+def test_labels_under_the_provenance_prefix_cannot_be_set_or_removed(client, headers, field):
+    _create(client, headers, {"name": "team-a"})
+    key = "cluster-service.test/created-by"
+    body = {"set": {key: "x"}} if field == "set" else {"remove": [key]}
+    before = _read(client, headers, "team-a")
+
+    resp = _patch(client, headers, "team-a", body)
+
+    assert resp.status_code == 422
+    assert key in resp.text
+    assert _read(client, headers, "team-a") == before
+
+
+@pytest.mark.parametrize("field", ["set", "remove"])
 def test_reserved_label_keys_cannot_be_set_or_removed(client, headers, field):
     _create(client, headers, {"name": "team-a"})
     keys = ["pod-security.kubernetes.io/enforce", "kubernetes.io/metadata.name"]
@@ -384,3 +435,93 @@ def test_a_malformed_update_is_422_and_changes_nothing(client, headers, body):
 
     assert _patch(client, headers, "team-a", body).status_code == 422
     assert _read(client, headers, "team-a") == before
+
+
+# ── updating annotations ──────────────────────────────────────────────────────
+
+
+def _annotate(client, headers, name, body):
+    return client.patch(f"{_URL}/{name}/annotations", headers=headers, json=body)
+
+
+def test_annotations_are_set_overwritten_and_removed_key_by_key(client, headers):
+    _create(client, headers, {"name": "team-a", "annotations": {"owner": "alice", "old": "x"}})
+
+    resp = _annotate(client, headers, "team-a", {"set": {"owner": "bob", "tier": "gold"}, "remove": ["old"]})
+
+    assert resp.status_code == 200, resp.text
+    returned = resp.json()["data"]["annotations"]
+    assert returned["owner"] == "bob" and returned["tier"] == "gold" and "old" not in returned
+    # What the response says is what a read says.
+    assert _read(client, headers, "team-a")["annotations"] == returned
+    # The creation stamps survive; the update adds its own.
+    assert returned["cluster-service.test/created-by"] == "test_admin"
+    assert returned["cluster-service.test/last-modified-by"] == "test_admin"
+
+
+def test_an_annotation_update_leaves_labels_and_foreign_annotations_alone(client, headers):
+    before = _read(client, headers, "dry-run-apps")
+
+    resp = _annotate(client, headers, "dry-run-apps", {"set": {"owner": "alice"}})
+
+    assert resp.status_code == 200, resp.text
+    after = _read(client, headers, "dry-run-apps")
+    assert after["labels"] == before["labels"]
+    assert after["annotations"]["meta.helm.sh/release-name"] == "dry-run-release"
+    assert "kubectl.kubernetes.io/last-applied-configuration" not in resp.json()["data"]["annotations"]
+
+
+def test_the_request_id_is_stamped_on_an_annotation_update(client, headers):
+    _create(client, headers, {"name": "team-a"})
+
+    resp = client.patch(
+        f"{_URL}/team-a/annotations",
+        headers={**headers, "X-Coordination-ID": "req-annotate"},
+        json={"set": {"owner": "alice"}},
+    )
+
+    assert resp.json()["data"]["annotations"]["cluster-service.test/last-request-id"] == "req-annotate"
+
+
+def test_annotating_a_missing_namespace_is_404(client, headers):
+    resp = _annotate(client, headers, "ghost", {"set": {"a": "b"}})
+
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "NAMESPACE_NOT_FOUND"
+
+
+@pytest.mark.parametrize("name", ["default", "kube-system"])
+def test_a_reserved_namespace_cannot_be_annotated(client, headers, name):
+    before = _read(client, headers, name)["annotations"]
+
+    resp = _annotate(client, headers, name, {"set": {"owner": "a"}})
+
+    assert resp.status_code == 422
+    assert _read(client, headers, name)["annotations"] == before
+
+
+@pytest.mark.parametrize("field", ["set", "remove"])
+@pytest.mark.parametrize(
+    "key", ["cluster-service.test/created-by", "scheduler.alpha.kubernetes.io/node-selector"]
+)
+def test_service_and_kubernetes_annotation_keys_cannot_be_set_or_removed(client, headers, field, key):
+    _create(client, headers, {"name": "team-a"})
+    body = {"set": {key: "x"}} if field == "set" else {"remove": [key]}
+    before = _read(client, headers, "team-a")
+
+    resp = _annotate(client, headers, "team-a", body)
+
+    assert resp.status_code == 422
+    assert key in resp.text
+    assert _read(client, headers, "team-a") == before
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{}, {"set": {}, "remove": []}, {"set": {"a": "b"}, "remove": ["a"]}, {"set": {"Bad Key": "x"}}],
+    ids=["empty", "both-empty", "key-in-both", "malformed-key"],
+)
+def test_a_contradictory_or_malformed_annotation_update_is_422(client, headers, body):
+    _create(client, headers, {"name": "team-a"})
+
+    assert _annotate(client, headers, "team-a", body).status_code == 422

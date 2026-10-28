@@ -155,6 +155,7 @@ def test_reads_are_not_policed(client, admin):
         ("patch", f"nodes/{_READY}/taints", {"remove": [{"key": "a", "effect": "NoSchedule"}]}),
         ("post", "namespaces", {"name": "team-a"}),
         ("patch", "namespaces/team-a/labels", {"set": {"a": "b"}}),
+        ("patch", "namespaces/team-a/annotations", {"set": {"a": "b"}}),
     ],
 )
 def test_every_write_route_is_policed(client, admin, method, path, body):
