@@ -19,9 +19,9 @@
             "match": { "cluster": ".*", "node": ".*-(master|control-plane)-\\d+" }
         },
         {
-            "id": "no-platform-namespace-labels",
-            "description": "platform namespaces are labelled by their own controllers",
-            "actions": ["namespace.label"],
+            "id": "no-platform-namespace-metadata",
+            "description": "platform namespaces are labelled and annotated by their own controllers",
+            "actions": ["namespace.label", "namespace.annotate"],
             "effect": "deny",
             "match": { "namespace": "(cattle|istio|monitoring)-.*" }
         }
@@ -35,7 +35,7 @@
             "scopes": ["cluster_api", "deploy_api", "command_api", "inventory_api"]
         },
         {
-            "$comment": "An allow list: for the actions it names, the request must match one allow rule. node.taint is denied outright. namespace.label is in no operator rule, so only the global rules restrict it.",
+            "$comment": "An allow list: for the actions it names, the request must match one allow rule. node.taint is denied outright. namespace.label and namespace.annotate are in no operator rule, so only the global rules restrict them.",
             "account": "operator",
             "hashed_password": "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW",
             "scopes": ["cluster_api"],

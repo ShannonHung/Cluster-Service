@@ -42,8 +42,8 @@ nor update them.
 
 - On create: `created-by`, `created-at`, `last-request-id`. `created-*` is written
   once and never overwritten by anything later.
-- On a label update: `last-modified-by`, `last-modified-at`, `last-request-id` —
-  also on namespaces the service did not create, which therefore carry
+- On a label or annotation update: `last-modified-by`, `last-modified-at`,
+  `last-request-id` — also on namespaces the service did not create, which therefore carry
   `last-modified-*` without `created-*`.
 
 "By" is the authenticated account from the caller's token — the only identity the
@@ -51,4 +51,10 @@ service has verified. No caller-asserted identity (e.g. an on-behalf-of header)
 is recorded.
 
 These annotations belong to the service: no caller-facing field can set or
-remove them, and any future annotations API must treat the prefix as reserved.
+remove them. The annotations API (create and `PATCH …/annotations`) honours
+that: a key under the prefix, or a subdomain of it, is refused in `set` and
+`remove` alike. The prefix is reserved for **labels** too, though the stamps
+are annotations and a label could not collide with one — it is the team's own
+internal namespace, so nobody else writes or clears anything under it. That
+also means a label left under the prefix (by another tool, or before a prefix
+change) cannot be removed through the service, only with `kubectl`.

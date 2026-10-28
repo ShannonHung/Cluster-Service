@@ -49,6 +49,7 @@ class PolicyAction(StrEnum):
     NODE_TAINT = "node.taint"
     NAMESPACE_CREATE = "namespace.create"
     NAMESPACE_LABEL = "namespace.label"
+    NAMESPACE_ANNOTATE = "namespace.annotate"
 
 
 class PolicyParam(StrEnum):
@@ -73,6 +74,7 @@ POLICY_ACTIONS: dict[PolicyAction, frozenset[PolicyParam]] = {
     PolicyAction.NODE_TAINT: _ON_NODE,
     PolicyAction.NAMESPACE_CREATE: _ON_NAMESPACE,
     PolicyAction.NAMESPACE_LABEL: _ON_NAMESPACE,
+    PolicyAction.NAMESPACE_ANNOTATE: _ON_NAMESPACE,
 }
 
 # What a route hands the policy: the values the request will act on.

@@ -22,10 +22,22 @@ def is_dns_subdomain(value: str) -> bool:
     return len(value) <= DNS_SUBDOMAIN_MAX and bool(_DNS_SUBDOMAIN.match(value))
 
 
+def _is_domain_or_subdomain(domain: str, root: str) -> bool:
+    """`root` itself or any subdomain of it — not a domain that merely ends in
+    the same letters (`notkubernetes.io`)."""
+    return domain == root or domain.endswith("." + root)
+
+
 def is_reserved_domain(domain: str) -> bool:
-    """True for `kubernetes.io`, `k8s.io` and any subdomain of either — but not
-    for a domain that merely ends in the same letters (`notkubernetes.io`)."""
-    return any(domain == d or domain.endswith("." + d) for d in _RESERVED_DOMAINS)
+    """True for `kubernetes.io`, `k8s.io` and any subdomain of either."""
+    return any(_is_domain_or_subdomain(domain, d) for d in _RESERVED_DOMAINS)
+
+
+def is_under_domain(key: str, domain: str) -> bool:
+    """True when ``key``'s prefix (before the `/`) is ``domain`` or a subdomain
+    of it. A key without a prefix is under no domain."""
+    prefix, slash, _ = key.rpartition("/")
+    return bool(slash) and _is_domain_or_subdomain(prefix, domain)
 
 
 # A label name (the part after the optional `prefix/`) and a non-empty label
@@ -64,6 +76,24 @@ def check_label_keys(keys: list[str]) -> None:
     if reserved:
         problems.append(
             f"label keys {reserved} are reserved for Kubernetes (kubernetes.io, k8s.io)"
+        )
+    if problems:
+        raise ValueError("; ".join(problems))
+
+
+def check_annotation_keys(keys: list[str]) -> None:
+    """Raise ValueError naming every malformed and every reserved annotation key
+    at once. An annotation key has the shape of a label key and the same
+    reserved domains (Kubernetes admission plugins act on some of them); the
+    values are free-form, so they are not checked."""
+    malformed = [k for k in keys if _malformed_key(k)]
+    reserved = [k for k in keys if k not in malformed and is_reserved_label_key(k)]
+    problems = []
+    if malformed:
+        problems.append(f"malformed annotation keys {malformed}")
+    if reserved:
+        problems.append(
+            f"annotation keys {reserved} are reserved for Kubernetes (kubernetes.io, k8s.io)"
         )
     if problems:
         raise ValueError("; ".join(problems))
