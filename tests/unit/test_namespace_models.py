@@ -48,3 +48,36 @@ def test_an_annotation_key_may_carry_a_domain_prefix():
     body = NamespaceCreateRequest(name="team-a", annotations={"example.com/owner": "alice"})
 
     assert body.annotations == {"example.com/owner": "alice"}
+
+
+def test_annotation_keys_reserved_for_kubernetes_are_refused_naming_every_one():
+    """Kubernetes admission plugins act on some of these (e.g. the scheduler's
+    node-selector), so a caller may not set them any more than a Reserved label
+    key."""
+    with pytest.raises(ValidationError) as info:
+        NamespaceCreateRequest(
+            name="team-a",
+            annotations={
+                "scheduler.alpha.kubernetes.io/node-selector": "x=y",
+                "k8s.io/anything": "1",
+                "kubectl.kubernetes.io/last-applied-configuration": "{}",
+                "owner": "alice",
+            },
+        )
+
+    message = info.value.errors()[0]["msg"]
+    for key in (
+        "scheduler.alpha.kubernetes.io/node-selector",
+        "k8s.io/anything",
+        "kubectl.kubernetes.io/last-applied-configuration",
+    ):
+        assert key in message
+    assert "owner" not in message
+
+
+def test_a_domain_that_only_resembles_a_reserved_one_is_allowed_as_an_annotation_key():
+    body = NamespaceCreateRequest(
+        name="team-a", annotations={"notkubernetes.io/x": "1", "kubernetes.io.evil/x": "2"}
+    )
+
+    assert len(body.annotations) == 2

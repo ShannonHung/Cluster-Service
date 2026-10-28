@@ -385,8 +385,9 @@ class NamespaceCreateRequest(BaseModel):
     annotations: dict[str, str] = Field(
         default_factory=dict,
         description=(
-            "Namespace annotations, free-form values. Keys under the service's "
-            "provenance prefix are refused: they are the service's own."
+            "Namespace annotations, free-form values. Keys under `kubernetes.io` / "
+            "`k8s.io` (or a subdomain) are reserved and refused, as are keys under "
+            "the service's provenance prefix: they are the service's own."
         ),
     )
 

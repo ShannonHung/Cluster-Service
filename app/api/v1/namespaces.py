@@ -136,7 +136,7 @@ async def get_namespace(
     description=(
         "Creates a namespace from ``name`` (DNS-1123 label; not ``default``, "
         "not ``kube-*``), optional ``labels`` and optional ``annotations`` "
-        "(free-form values). A label key under "
+        "(free-form values). A label or annotation key under "
         "``kubernetes.io`` / ``k8s.io`` (or a subdomain) is reserved: 422 "
         "naming every such key. A label or annotation key under "
         "``<PROVENANCE_ANNOTATION_PREFIX>`` (or a subdomain) is the service's own: "

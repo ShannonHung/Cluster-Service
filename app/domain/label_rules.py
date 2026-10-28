@@ -82,12 +82,21 @@ def check_label_keys(keys: list[str]) -> None:
 
 
 def check_annotation_keys(keys: list[str]) -> None:
-    """Raise ValueError naming every malformed annotation key at once. An
-    annotation key has the shape of a label key; unlike labels, no domain is
-    reserved here and the values are free-form, so they are not checked."""
+    """Raise ValueError naming every malformed and every reserved annotation key
+    at once. An annotation key has the shape of a label key and the same
+    reserved domains (Kubernetes admission plugins act on some of them); the
+    values are free-form, so they are not checked."""
     malformed = [k for k in keys if _malformed_key(k)]
+    reserved = [k for k in keys if k not in malformed and is_reserved_label_key(k)]
+    problems = []
     if malformed:
-        raise ValueError(f"malformed annotation keys {malformed}")
+        problems.append(f"malformed annotation keys {malformed}")
+    if reserved:
+        problems.append(
+            f"annotation keys {reserved} are reserved for Kubernetes (kubernetes.io, k8s.io)"
+        )
+    if problems:
+        raise ValueError("; ".join(problems))
 
 
 def check_labels(labels: dict[str, str]) -> None:
