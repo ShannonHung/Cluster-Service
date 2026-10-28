@@ -10,6 +10,7 @@ whose deletion was requested and which is still emptying itself.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -258,7 +259,7 @@ def test_a_label_under_the_provenance_prefix_is_refused_on_create():
     it with a label either. Refused before Kubernetes is called."""
     kube = MagicMock()
 
-    with pytest.raises(ValidationException, match="cs.acme.io/created-by"):
+    with pytest.raises(ValidationException, match=re.escape("cs.acme.io/created-by")):
         _svc().create_namespace(
             cluster="c1", name="team-a", labels={"cs.acme.io/created-by": "mallory"},
             caller=Caller(account="alice", request_id="r"), kube=kube,
@@ -414,7 +415,7 @@ def test_an_update_without_a_request_id_clears_the_previous_one():
 def test_a_label_under_the_provenance_prefix_is_refused_on_update_set():
     kube = MagicMock()
 
-    with pytest.raises(ValidationException, match="cs.acme.io/last-modified-by"):
+    with pytest.raises(ValidationException, match=re.escape("cs.acme.io/last-modified-by")):
         _update(kube, set_labels={"team": "b", "cs.acme.io/last-modified-by": "mallory"})
 
     kube.patch_namespace.assert_not_called()
@@ -425,7 +426,7 @@ def test_a_label_under_the_provenance_prefix_is_refused_on_update_remove():
     setting one would forge it."""
     kube = MagicMock()
 
-    with pytest.raises(ValidationException, match="cs.acme.io/created-by"):
+    with pytest.raises(ValidationException, match=re.escape("cs.acme.io/created-by")):
         _update(kube, remove_labels=["cs.acme.io/created-by"])
 
     kube.patch_namespace.assert_not_called()
@@ -434,7 +435,7 @@ def test_a_label_under_the_provenance_prefix_is_refused_on_update_remove():
 def test_a_subdomain_of_the_provenance_prefix_is_refused_too():
     kube = MagicMock()
 
-    with pytest.raises(ValidationException, match="a.cs.acme.io/x"):
+    with pytest.raises(ValidationException, match=re.escape("a.cs.acme.io/x")):
         _update(kube, set_labels={"a.cs.acme.io/x": "1"})
 
     kube.patch_namespace.assert_not_called()
@@ -450,6 +451,15 @@ def test_a_key_that_only_resembles_the_provenance_prefix_is_allowed(key):
     _update(kube, set_labels={key: "1"})
 
     kube.patch_namespace.assert_called_once()
+
+
+def test_a_key_in_both_set_and_remove_is_named_once():
+    kube = MagicMock()
+
+    with pytest.raises(ValidationException) as info:
+        _update(kube, set_labels={"cs.acme.io/a": "1"}, remove_labels=["cs.acme.io/a"])
+
+    assert info.value.message.count("cs.acme.io/a") == 1
 
 
 def test_every_key_under_the_provenance_prefix_is_named_at_once():

@@ -77,18 +77,21 @@ class NamespaceService:
         """Create a namespace stamped with its provenance annotations.
 
         The name and ``labels`` are validated (DNS-1123 label, not reserved;
-        no Reserved label key) by the request model before this is called. The
+        no Reserved label key) by the request model before this is called; a
+        label key under the provenance prefix is refused here, as the prefix is
+        a setting the model cannot see. The
         annotations say who (the caller's authenticated account), when, and in
         which request — a pointer back to the audit trail, not an audit record
         (ADR 0002).
 
         Raises:
+            ValidationException: A label key is under the provenance prefix.
             NamespaceAlreadyExistsException: The name is taken — by a namespace
                 that is there, or by a Terminating one (CONTEXT.md), which the
                 message and ``detail["status"]`` tell apart.
             KubeApiException: On any other Kubernetes API failure.
         """
-        self._refuse_provenance_keys(labels, "label")
+        self._refuse_provenance_keys(labels)
         with translate_kube_errors(cluster, f"create namespace '{name}' in cluster '{cluster}'"):
             try:
                 ns = kube.create_namespace(
@@ -131,7 +134,8 @@ class NamespaceService:
         request model; a key absent from the namespace is a no-op.
 
         Raises:
-            ValidationException: ``name`` is a Reserved namespace name.
+            ValidationException: ``name`` is a Reserved namespace name, or a
+                key is under the provenance prefix (in ``set`` or ``remove``).
             NamespaceNotFoundException: The namespace does not exist.
             KubeApiException: On any other Kubernetes API failure.
         """
@@ -140,7 +144,7 @@ class NamespaceService:
                 f"Namespace '{name}' is reserved for Kubernetes; its labels cannot be "
                 "changed through this service.",
             )
-        self._refuse_provenance_keys([*set_labels, *remove_labels], "label")
+        self._refuse_provenance_keys(dict.fromkeys([*set_labels, *remove_labels]))
         body = {
             "metadata": {
                 "labels": key_merge_patch(set_labels, remove_labels),
@@ -227,13 +231,14 @@ class NamespaceService:
         _logger.info("Read namespace | cluster=%s | name=%s", cluster, name)
         return _to_detail(cluster, ns)
 
-    def _refuse_provenance_keys(self, keys: Iterable[str], kind: str) -> None:
+    def _refuse_provenance_keys(self, keys: Iterable[str]) -> None:
         """The provenance prefix belongs to the service (ADR 0002): raise naming
-        every ``keys`` entry under it, so one refusal reveals the whole set."""
+        every label key in ``keys`` under it, once each, so one refusal reveals
+        the whole set."""
         under = [k for k in keys if is_under_domain(k, self._prefix)]
         if under:
             raise ValidationException(
-                f"{kind} keys {under} are under '{self._prefix}', which belongs to "
+                f"label keys {under} are under '{self._prefix}', which belongs to "
                 "this service and cannot be written by a caller.",
             )
 

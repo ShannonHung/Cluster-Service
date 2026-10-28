@@ -22,17 +22,22 @@ def is_dns_subdomain(value: str) -> bool:
     return len(value) <= DNS_SUBDOMAIN_MAX and bool(_DNS_SUBDOMAIN.match(value))
 
 
+def _is_domain_or_subdomain(domain: str, root: str) -> bool:
+    """`root` itself or any subdomain of it — not a domain that merely ends in
+    the same letters (`notkubernetes.io`)."""
+    return domain == root or domain.endswith("." + root)
+
+
 def is_reserved_domain(domain: str) -> bool:
-    """True for `kubernetes.io`, `k8s.io` and any subdomain of either — but not
-    for a domain that merely ends in the same letters (`notkubernetes.io`)."""
-    return any(domain == d or domain.endswith("." + d) for d in _RESERVED_DOMAINS)
+    """True for `kubernetes.io`, `k8s.io` and any subdomain of either."""
+    return any(_is_domain_or_subdomain(domain, d) for d in _RESERVED_DOMAINS)
 
 
 def is_under_domain(key: str, domain: str) -> bool:
     """True when ``key``'s prefix (before the `/`) is ``domain`` or a subdomain
     of it. A key without a prefix is under no domain."""
     prefix, slash, _ = key.rpartition("/")
-    return bool(slash) and (prefix == domain or prefix.endswith("." + domain))
+    return bool(slash) and _is_domain_or_subdomain(prefix, domain)
 
 
 # A label name (the part after the optional `prefix/`) and a non-empty label
