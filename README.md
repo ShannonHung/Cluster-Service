@@ -241,6 +241,7 @@ An action is a fixed name for one kind of write, `<resource>.<verb>`. The list i
 | `node.taint` | `cluster`, `node` | `PATCH …/nodes/{node}/taints` |
 | `namespace.create` | `cluster`, `namespace` | `POST /api/v1/clusters/{cluster}/namespaces` (`namespace` = body `name`) |
 | `namespace.label` | `cluster`, `namespace` | `PATCH /api/v1/clusters/{cluster}/namespaces/{name}/labels` |
+| `namespace.annotate` | `cluster`, `namespace` | `PATCH /api/v1/clusters/{cluster}/namespaces/{name}/annotations` |
 
 Only writes are policed — every `GET` is unaffected, and so are the deploy / command / inventory proxies (deploy-service restricts those itself). A name not in this table, or a `match` key the rule's actions do not have (e.g. `node` on `namespace.create`), makes the file invalid rather than leaving an inert rule. A new write endpoint gets its action added to `PolicyAction` / `POLICY_ACTIONS` and to this table.
 

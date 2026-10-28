@@ -23,6 +23,7 @@ from app.core.exceptions import (
     ValidationException,
 )
 from app.domain.kubernetes_models import (
+    NamespaceAnnotationsData,
     NamespaceDetailData,
     NamespaceLabelsData,
     NamespaceListData,
@@ -171,6 +172,56 @@ class NamespaceService:
         )
         return NamespaceLabelsData(cluster=cluster, name=name, labels=ns.metadata.labels or {})
 
+    def update_annotations(
+        self,
+        cluster: str,
+        name: str,
+        set_annotations: dict[str, str],
+        remove_annotations: list[str],
+        caller: Caller,
+        kube: CoreV1Api,
+    ) -> NamespaceAnnotationsData:
+        """Add / overwrite ``set_annotations`` and delete ``remove_annotations``
+        in one patch, stamping ``last-modified-*`` and ``last-request-id``
+        alongside (ADR 0002); ``created-*`` is never touched.
+
+        Raises:
+            ValidationException: ``name`` is a Reserved namespace name, or a key
+                is under the provenance prefix (in ``set`` or ``remove``).
+            NamespaceNotFoundException: The namespace does not exist.
+            KubeApiException: On any other Kubernetes API failure.
+        """
+        if is_reserved_namespace_name(name):
+            raise ValidationException(
+                f"Namespace '{name}' is reserved for Kubernetes; its annotations cannot be "
+                "changed through this service.",
+            )
+        self._refuse_provenance_keys(annotations=[*set_annotations, *remove_annotations])
+        body = {
+            "metadata": {
+                "annotations": {
+                    **key_merge_patch(set_annotations, remove_annotations),
+                    **self._provenance("last-modified", caller),
+                }
+            }
+        }
+        with translate_kube_errors(
+            cluster,
+            f"patch annotations on namespace '{name}' of cluster '{cluster}'",
+            not_found=lambda: NamespaceNotFoundException(
+                f"Namespace '{name}' not found in cluster '{cluster}'.",
+            ),
+        ):
+            ns = kube.patch_namespace(name, body)
+
+        _logger.info(
+            "Patched namespace annotations | cluster=%s | name=%s | set=%s | remove=%s | user=%s",
+            cluster, name, sorted(set_annotations), sorted(remove_annotations), caller.account,
+        )
+        return NamespaceAnnotationsData(
+            cluster=cluster, name=name, annotations=_readable_annotations(ns)
+        )
+
     def list_namespaces(
         self,
         cluster: str,
@@ -313,10 +364,12 @@ def _phase(ns: V1Namespace) -> NamespacePhase:
     return ns.status.phase if ns.status and ns.status.phase else "Active"
 
 
+def _readable_annotations(ns: V1Namespace) -> dict[str, str]:
+    return {k: v for k, v in (ns.metadata.annotations or {}).items() if k != _LAST_APPLIED}
+
+
 def _to_detail(cluster: str, ns: V1Namespace) -> NamespaceDetailData:
-    annotations = {
-        k: v for k, v in (ns.metadata.annotations or {}).items() if k != _LAST_APPLIED
-    }
+    annotations = _readable_annotations(ns)
     return NamespaceDetailData(
         cluster=cluster,
         name=ns.metadata.name,

@@ -452,6 +452,57 @@ class NamespaceLabelsPatchRequest(BaseModel):
         return self
 
 
+class NamespaceAnnotationsPatchRequest(BaseModel):
+    """Request body for PATCH /api/v1/clusters/{cluster}/namespaces/{name}/annotations.
+
+    The counterpart of ``NamespaceLabelsPatchRequest``: annotations change key
+    by key, never wholesale, because other parties annotate namespaces too. A
+    key under ``kubernetes.io`` / ``k8s.io`` is refused in ``remove`` as well as
+    ``set``. The provenance prefix is a setting this model cannot see, so that
+    check lives in ``NamespaceService``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    set: dict[str, str] = Field(
+        default_factory=dict, description="Annotations to add or overwrite; values are free-form."
+    )
+    remove: list[str] = Field(
+        default_factory=list, description="Annotation keys to delete; an absent key is a no-op."
+    )
+
+    @field_validator("set")
+    @classmethod
+    def _valid_set(cls, annotations: dict[str, str]) -> dict[str, str]:
+        check_annotation_keys(list(annotations))
+        return annotations
+
+    @field_validator("remove")
+    @classmethod
+    def _valid_remove(cls, keys: list[str]) -> list[str]:
+        check_annotation_keys(keys)
+        return keys
+
+    @model_validator(mode="after")
+    def _a_change_and_no_contradiction(self) -> "NamespaceAnnotationsPatchRequest":
+        if not self.set and not self.remove:
+            raise ValueError("nothing to change: give `set`, `remove`, or both")
+        both = sorted(self.set.keys() & set(self.remove))
+        if both:
+            raise ValueError(f"annotation keys {both} are in both `set` and `remove`")
+        return self
+
+
+class NamespaceAnnotationsData(BaseModel):
+    """Response body for PATCH …/namespaces/{name}/annotations — the namespace's
+    full current annotations after the update, less the stale
+    ``last-applied-configuration`` copy a read also leaves out."""
+
+    cluster: str
+    name: str
+    annotations: dict[str, str] = Field(default_factory=dict)
+
+
 class NamespaceLabelsData(BaseModel):
     """Response body for PATCH …/namespaces/{name}/labels — the namespace's
     full current labels after the update."""

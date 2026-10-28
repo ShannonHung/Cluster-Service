@@ -123,6 +123,7 @@ _PROTECTED = [
     ("get", f"{_CLUSTER}/namespaces/default"),
     ("post", f"{_CLUSTER}/namespaces"),
     ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/labels"),
+    ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/annotations"),
     ("post", "/api/v1/deploy"),
     ("get", "/api/v1/deploy/1"),
     ("get", "/api/v1/command/info"),
@@ -161,6 +162,7 @@ def test_garbage_token_is_401(dry, method, path):
         ("get", f"{_CLUSTER}/namespaces/default"),
         ("post", f"{_CLUSTER}/namespaces"),
         ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/labels"),
+        ("patch", f"{_CLUSTER}/namespaces/dry-run-apps/annotations"),
     ],
 )
 def test_missing_cluster_api_is_403(dry, method, path):

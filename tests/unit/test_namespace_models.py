@@ -11,7 +11,10 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.domain.kubernetes_models import NamespaceCreateRequest
+from app.domain.kubernetes_models import (
+    NamespaceAnnotationsPatchRequest,
+    NamespaceCreateRequest,
+)
 
 
 def test_a_create_request_may_carry_annotations():
@@ -81,3 +84,49 @@ def test_a_domain_that_only_resembles_a_reserved_one_is_allowed_as_an_annotation
     )
 
     assert len(body.annotations) == 2
+
+
+# ── updating annotations ──────────────────────────────────────────────────────
+
+
+def test_an_annotations_update_takes_set_and_remove():
+    body = NamespaceAnnotationsPatchRequest(set={"owner": "alice"}, remove=["old"])
+
+    assert body.set == {"owner": "alice"}
+    assert body.remove == ["old"]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {},
+        {"set": {}, "remove": []},
+        {"set": {"owner": "a"}, "remove": ["owner"]},
+        {"set": {"owner": "a"}, "unknown": 1},
+    ],
+    ids=["empty", "both-empty", "key-in-both", "unknown-field"],
+)
+def test_an_annotations_update_must_change_something_without_contradiction(fields):
+    with pytest.raises(ValidationError):
+        NamespaceAnnotationsPatchRequest(**fields)
+
+
+@pytest.mark.parametrize("field", ["set", "remove"])
+def test_malformed_and_reserved_annotation_keys_are_refused_in_set_and_remove(field):
+    keys = ["Bad Key", "pod-security.kubernetes.io/enforce", "k8s.io/x"]
+    fields = {"set": dict.fromkeys(keys, "v")} if field == "set" else {"remove": keys}
+
+    with pytest.raises(ValidationError) as info:
+        NamespaceAnnotationsPatchRequest(**fields)
+
+    message = info.value.errors()[0]["msg"]
+    for key in keys:
+        assert key in message
+
+
+def test_an_annotations_update_accepts_free_form_values_and_removes_by_key():
+    body = NamespaceAnnotationsPatchRequest(
+        set={"note": "has spaces & {json: [1]}", "empty": ""}, remove=["old", "example.com/x"]
+    )
+
+    assert body.set["empty"] == ""
