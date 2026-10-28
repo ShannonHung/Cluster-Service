@@ -102,17 +102,20 @@ router (app/api/v1/)
 |--------|------|-------------|
 | `GET` | `/api/v1/clusters/{cluster}/namespaces` | List namespaces; filter by `name` (prefixes), `status` (`Active` / `Terminating`), `label_selector`. Returns every match (paging is internal) |
 | `GET` | `/api/v1/clusters/{cluster}/namespaces/{name}` | Read one namespace; 404 `NAMESPACE_NOT_FOUND` |
-| `POST` | `/api/v1/clusters/{cluster}/namespaces` | Create a namespace from `{"name": "...", "labels": {...}}` (`labels` optional); 201. `default` / `kube-*`, non-DNS-1123 names, malformed labels, label keys under `kubernetes.io` / `k8s.io` (or a subdomain) and any other body field are 422. 409 `NAMESPACE_ALREADY_EXISTS`, with `detail.status` = `Terminating` when the existing one is still being deleted |
-| `PATCH` | `/api/v1/clusters/{cluster}/namespaces/{name}/labels` | `{"set": {...}, "remove": [...]}` — add/overwrite and delete labels key by key (absent key = no-op); returns the full current labels. 422 for `kubernetes.io` / `k8s.io` keys (in `set` or `remove`), malformed labels, an empty or contradictory body, or `default` / `kube-*`. 404 `NAMESPACE_NOT_FOUND`. Stamps `last-modified-by` / `-at` / `last-request-id` |
+| `POST` | `/api/v1/clusters/{cluster}/namespaces` | Create a namespace from `{"name": "...", "labels": {...}, "annotations": {...}}` (`labels` and `annotations` optional); 201. `default` / `kube-*`, non-DNS-1123 names, malformed labels or annotation keys, label or annotation keys under `kubernetes.io` / `k8s.io` (or a subdomain), label or annotation keys under `PROVENANCE_ANNOTATION_PREFIX` (or a subdomain) and any other body field are 422. 409 `NAMESPACE_ALREADY_EXISTS`, with `detail.status` = `Terminating` when the existing one is still being deleted |
+| `PATCH` | `/api/v1/clusters/{cluster}/namespaces/{name}/labels` | `{"set": {...}, "remove": [...]}` — add/overwrite and delete labels key by key (absent key = no-op); returns the full current labels. 422 for `kubernetes.io` / `k8s.io` keys or keys under `PROVENANCE_ANNOTATION_PREFIX` (in `set` or `remove`), malformed labels, an empty or contradictory body, or `default` / `kube-*`. 404 `NAMESPACE_NOT_FOUND`. Stamps `last-modified-by` / `-at` / `last-request-id` |
+| `PATCH` | `/api/v1/clusters/{cluster}/namespaces/{name}/annotations` | `{"set": {...}, "remove": [...]}` — add/overwrite and delete annotations key by key (values are free-form; absent key = no-op); returns the full current annotations, less `last-applied-configuration`. 422 for `kubernetes.io` / `k8s.io` keys or keys under `PROVENANCE_ANNOTATION_PREFIX` (in `set` or `remove`), malformed keys, an empty or contradictory body, or `default` / `kube-*`. 404 `NAMESPACE_NOT_FOUND`. Stamps `last-modified-by` / `-at` / `last-request-id`. Gated by the `namespace.annotate` policy action |
 
 There is no delete endpoint: deleting a namespace takes everything in it.
 A created namespace is stamped with **provenance annotations** under
 `PROVENANCE_ANNOTATION_PREFIX`: `<prefix>/created-by` (the token's account),
 `<prefix>/created-at` (UTC) and `<prefix>/last-request-id` (`X-Coordination-ID`);
-a label update stamps `<prefix>/last-modified-by`, `<prefix>/last-modified-at`
+a label or annotation update stamps `<prefix>/last-modified-by`, `<prefix>/last-modified-at`
 and `last-request-id`, never touching `created-*`.
 They are a pointer back to the logs, not an audit record — anyone with direct
-cluster access can change them (ADR 0002).
+cluster access can change them (ADR 0002). The prefix is the team's own: no
+caller can set or remove a label **or** annotation key under it, so a label
+already left there can only be removed with `kubectl`.
 
 > ⚠️ A new namespace grants cluster-service **nothing** inside it. Its
 > ConfigMaps stay unreadable until that namespace is given the per-namespace
@@ -229,7 +232,7 @@ A rule:
 
 #### Where action names come from
 
-An action is a fixed name for one kind of write, `<resource>.<verb>`. The list is defined in code — the `PolicyAction` enum and, with the parameters each action can be matched on, `POLICY_ACTIONS`, both in [`app/domain/access_policy.py`](app/domain/access_policy.py). A rule names an action by its value (`"node.drain"`), not by the enum member. Each name maps to the endpoints below, and the parameter values are taken from the request: `cluster` and `node` from the URL path, `namespace` from the path (label update) or from the body's `name` (create).
+An action is a fixed name for one kind of write, `<resource>.<verb>`. The list is defined in code — the `PolicyAction` enum and, with the parameters each action can be matched on, `POLICY_ACTIONS`, both in [`app/domain/access_policy.py`](app/domain/access_policy.py). A rule names an action by its value (`"node.drain"`), not by the enum member. Each name maps to the endpoints below, and the parameter values are taken from the request: `cluster` and `node` from the URL path, `namespace` from the path (label or annotation update) or from the body's `name` (create).
 
 | Action | `match` keys | Endpoints it covers |
 |--------|--------------|---------------------|
@@ -242,6 +245,14 @@ An action is a fixed name for one kind of write, `<resource>.<verb>`. The list i
 | `namespace.create` | `cluster`, `namespace` | `POST /api/v1/clusters/{cluster}/namespaces` (`namespace` = body `name`) |
 | `namespace.label` | `cluster`, `namespace` | `PATCH /api/v1/clusters/{cluster}/namespaces/{name}/labels` |
 | `namespace.annotate` | `cluster`, `namespace` | `PATCH /api/v1/clusters/{cluster}/namespaces/{name}/annotations` |
+
+> ⚠️ **Upgrading to a version with `namespace.annotate`.** An action that no rule
+> names is allowed, so a rule written for `namespace.label` does **not** cover
+> annotating: after the upgrade an account limited to labelling a namespace (or
+> denied the platform ones, `cattle-*`, `istio-*`, …) can still annotate it.
+> Before deploying, add `namespace.annotate` beside `namespace.label` in every
+> rule that names it, or in a rule of its own; `make check-users` will not flag
+> the gap.
 
 Only writes are policed — every `GET` is unaffected, and so are the deploy / command / inventory proxies (deploy-service restricts those itself). A name not in this table, or a `match` key the rule's actions do not have (e.g. `node` on `namespace.create`), makes the file invalid rather than leaving an inert rule. A new write endpoint gets its action added to `PolicyAction` / `POLICY_ACTIONS` and to this table.
 
@@ -321,6 +332,7 @@ namespace instead.
 | `GET /clusters/{cluster}/namespaces/{name}` | `namespaces` | `get` |
 | `POST /clusters/{cluster}/namespaces` | `namespaces` | `create`, `get` (`get` only on 409, to tell a Terminating namespace apart) |
 | `PATCH /clusters/{cluster}/namespaces/{name}/labels` | `namespaces` | `patch` |
+| `PATCH /clusters/{cluster}/namespaces/{name}/annotations` | `namespaces` | `patch` |
 
 All paths are under `/api/v1`. `GET /clusters` reads local config only and
 needs no Kubernetes permission.
