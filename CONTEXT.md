@@ -154,7 +154,7 @@ list is fixed, not configurable, and a refusal names every offending key at once
 
 **Provenance prefix** — The domain the service's own annotations live under,
 set per deployment. It is the team's internal namespace: no caller may set or
-remove a label or an annotation key under it (nor under a subdomain of it),
+remove a label or an annotation key under it (nor under a subdomain of it, nor the bare domain itself with no `/`),
 whatever the key's purpose. Refused on create and on every update, and a
 refusal names every offending key at once.
 
