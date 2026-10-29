@@ -35,9 +35,11 @@ def is_reserved_domain(domain: str) -> bool:
 
 def is_under_domain(key: str, domain: str) -> bool:
     """True when ``key``'s prefix (before the `/`) is ``domain`` or a subdomain
-    of it. A key without a prefix is under no domain."""
-    prefix, slash, _ = key.rpartition("/")
-    return bool(slash) and _is_domain_or_subdomain(prefix, domain)
+    of it. A key without a `/` has no prefix, so the whole key is read as the
+    domain: the bare key ``test.com`` is under ``test.com`` — a name that is
+    the domain itself is as much the service's as ``test.com/x``."""
+    prefix, _, _ = key.rpartition("/")
+    return _is_domain_or_subdomain(prefix or key, domain)
 
 
 # A label name (the part after the optional `prefix/`) and a non-empty label

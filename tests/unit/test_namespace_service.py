@@ -483,7 +483,7 @@ def test_a_subdomain_of_the_provenance_prefix_is_refused_too():
 
 
 @pytest.mark.parametrize(
-    "key", ["notcs.acme.io/x", "cs.acme.io.evil/x", "acme.io/x", "cs.acme.io", "team"]
+    "key", ["notcs.acme.io/x", "cs.acme.io.evil/x", "acme.io/x", "notcs.acme.io", "team"]
 )
 def test_a_key_that_only_resembles_the_provenance_prefix_is_allowed(key):
     kube = MagicMock()
@@ -492,6 +492,30 @@ def test_a_key_that_only_resembles_the_provenance_prefix_is_allowed(key):
     _update(kube, set_labels={key: "1"})
 
     kube.patch_namespace.assert_called_once()
+
+
+@pytest.mark.parametrize("key", ["cs.acme.io", "a.cs.acme.io"])
+def test_a_bare_key_that_is_the_provenance_domain_is_refused_everywhere(key):
+    """No `/` means no prefix — but a name that is the domain itself would
+    still sit under the service's domain, so it is as closed as `cs.acme.io/x`."""
+    kube = MagicMock()
+
+    with pytest.raises(ValidationException, match=re.escape(key)):
+        _update(kube, set_labels={key: "1"})
+    with pytest.raises(ValidationException, match=re.escape(key)):
+        _update(kube, remove_labels=[key])
+    with pytest.raises(ValidationException, match=re.escape(key)):
+        _annotate(kube, set_annotations={key: "1"})
+    with pytest.raises(ValidationException, match=re.escape(key)):
+        _annotate(kube, remove_annotations=[key])
+    with pytest.raises(ValidationException, match=re.escape(key)):
+        _svc().create_namespace(
+            cluster="c1", name="team-a", labels={}, annotations={key: "1"},
+            caller=Caller(account="alice", request_id="r"), kube=kube,
+        )
+
+    kube.patch_namespace.assert_not_called()
+    kube.create_namespace.assert_not_called()
 
 
 def test_a_key_in_both_set_and_remove_is_named_once():
